@@ -7,6 +7,11 @@ import os
 import logging
 from collections import deque
 import sys
+import json
+from dotenv import load_dotenv
+
+# Cargar variables de entorno desde .env
+load_dotenv()
 
 # Paths base
 BASE = os.path.abspath(os.path.dirname(__file__))
@@ -37,8 +42,26 @@ FPS_DEQUE_MAXLEN = 10
 MODELO_OBJETOS = os.path.join(BASE, "modelos", "yolov8n.pt")
 MODELO_PATENTE = os.path.join(BASE, "modelos", "modelo_PATENTE.engine")
 MODELO_OCR = os.path.join(BASE, "modelos", "modelo_OCR.engine")
-TELEGRAM_TOKEN = "7880232433:AAG_YDSENmmjWVasD4UaE4g1ClkeLt2RZ_o"
-TELEGRAM_CHAT_ID = {1567062024}
+
+# Cargar valores sensibles desde variables de entorno
+try:
+    TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+except KeyError:
+    logging.error("Variable de entorno TELEGRAM_TOKEN no encontrada. Debe establecer esta variable.")
+    sys.exit(1)
+
+# Convertir CHAT_ID desde string a set de integers
+try:
+    chat_id_str = os.environ["TELEGRAM_CHAT_ID"]
+    # Eliminar llaves y convertir a lista de enteros
+    chat_id_str = chat_id_str.replace("{", "").replace("}", "")
+    TELEGRAM_CHAT_ID = set(int(id.strip()) for id in chat_id_str.split(",") if id.strip())
+    if not TELEGRAM_CHAT_ID:
+        raise ValueError("El conjunto de TELEGRAM_CHAT_ID está vacío")
+except Exception as e:
+    logging.error(f"Error al procesar TELEGRAM_CHAT_ID: {e}. Debe configurar correctamente esta variable de entorno.")
+    sys.exit(1)
+
 CONFIANZA_PATENTE = 60   # porcentaje
 DISPLAY_DURATION = 2
 SNAPSHOT_LATENCY_MS = 500
@@ -83,7 +106,14 @@ FAST_AREA_RATE_THRESHOLD = 0.05   # px²/ms; umbral para clasificar "rápido" vs
 # CONFIGURACIÓN DE BACKEND
 # ---------------------------------------------------------------------
 BACKEND_URL = "https://porton-ia-back-production.up.railway.app/accesLog/registro"
-BACKEND_HEADERS = {
-    "Content-Type": "application/json",
-    "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-}
+
+# Cargar headers desde variable de entorno
+try:
+    backend_headers_json = os.environ["BACKEND_HEADERS"]
+    BACKEND_HEADERS = json.loads(backend_headers_json)
+    # Verificar que los headers contienen los campos necesarios
+    if "Content-Type" not in BACKEND_HEADERS or "Authorization" not in BACKEND_HEADERS:
+        raise ValueError("BACKEND_HEADERS debe contener 'Content-Type' y 'Authorization'")
+except Exception as e:
+    logging.error(f"Error al cargar BACKEND_HEADERS: {e}. Debe configurar correctamente esta variable de entorno.")
+    sys.exit(1)
