@@ -9,7 +9,7 @@ from collections import deque
 import sys
 
 # Paths base
-BASE = os.path.dirname(os.path.dirname(__file__))
+BASE = os.path.abspath(os.path.dirname(__file__))
 MON_PATH = os.path.join(BASE, "scripts", "monitoreo_patentes")
 sys.path.insert(0, MON_PATH)
 
@@ -34,9 +34,9 @@ logging.getLogger("yolov8").setLevel(logging.ERROR)
 # CONSTANTES Y PARÁMETROS
 # ---------------------------------------------------------------------
 FPS_DEQUE_MAXLEN = 10
-MODELO_OBJETOS = os.path.join(BASE, "proyecto_portonAI", "modelos", "yolov8n.pt")
-MODELO_PATENTE = os.path.join(BASE, "proyecto_portonAI", "modelos", "modelo_PATENTE.engine")
-MODELO_OCR = os.path.join(BASE, "proyecto_portonAI", "modelos", "modelo_OCR.engine")
+MODELO_OBJETOS = os.path.join(BASE, "modelos", "yolov8n.pt")
+MODELO_PATENTE = os.path.join(BASE, "modelos", "modelo_PATENTE.engine")
+MODELO_OCR = os.path.join(BASE, "modelos", "modelo_OCR.engine")
 TELEGRAM_TOKEN = "7880232433:AAG_YDSENmmjWVasD4UaE4g1ClkeLt2RZ_o"
 TELEGRAM_CHAT_ID = {1567062024}
 CONFIANZA_PATENTE = 60   # porcentaje
@@ -50,7 +50,7 @@ VEHICLE_MEMORY_TIME = 15
 # Umbral de IOU para considerar que es el mismo vehículo
 SAME_VEHICLE_IOU_THRESHOLD = 0.3
 
-CALIBRATION_FILE = os.path.join(BASE, "proyecto_portonAI", "calibration_params.json")
+CALIBRATION_FILE = os.path.join(BASE, "calibration_params.json")
 DEFAULT_CALIBRATION_PARAMS = {
     "gamma": 1.0,
     "clahe_enabled": False,
