@@ -246,6 +246,10 @@ class OCRProcessor:
         Returns:
             Lista de dicts procesados por process_ocr_result_detailed
         """
+        # Si llega un ROI vacío, no intentamos ningún resize
+        if plate_img is None or plate_img.size == 0:
+            logging.warning("OCR multiescala omitido: ROI vacío")
+            return []
         results = []
         for scale in range(50, 105, 5):
             try:

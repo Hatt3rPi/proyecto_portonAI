@@ -211,7 +211,6 @@ def main():
 
             # 2.4 Detección de placas en frame reducido
             all_detections = []
-            ocr_candidates = []
             results = model_plate.predict(inference_frame, device='cuda:0', verbose=False)
             for box in results[0].boxes:
                 conf = float(box.conf[0]) * 100
@@ -221,19 +220,16 @@ def main():
                 # escalar a HD
                 xh = int(x1 * scale_x)
                 yh = int(y1 * scale_y)
-                w = int((x2 - x1) * scale_x)
-                h = int((y2 - y1) * scale_y)
+                x2h = int(x2 * scale_x)
+                y2h = int(y2 * scale_y)
+                area = (x2h - xh) * (y2h - yh)
 
                 # debug: dibujar todas las detecciones
                 if DEBUG_MODE:
-                    cv2.rectangle(frame_ld, (xh, yh), (xh + w, yh + h), (0,255,0), 2)
+                    cv2.rectangle(frame_ld, (xh, yh), (x2h, y2h), (0,255,0), 2)
 
-                # Tracking para todas las cajas
-                all_detections.append((xh, yh, w, h))
-
-                # Solo candidatas para OCR
-                if w * h >= 1000:
-                    ocr_candidates.append((xh, yh, w, h))
+                # Tracking para todas las cajas en formato (x1,y1,x2,y2)
+                all_detections.append((xh, yh, x2h, y2h))
 
             # 2.5 Actualizar tracking híbrido
             active_plates = plate_manager.update(frame_ld, all_detections)
@@ -241,9 +237,11 @@ def main():
             # 2.6 OCR en streaming (ligero)
             for pid, inst in active_plates.items():
                 if inst.ocr_status == 'pending':
-                    x, y, w, h = inst.bbox
+                    x1, y1, x2, y2 = inst.bbox
+                    w = x2 - x1
+                    h = y2 - y1
                     if w * h >= UMBRAL_SNAPSHOT_AREA:
-                        crop = frame_ld[y:y+h, x:x+w]
+                        crop = frame_ld[y1:y2, x1:x2]
                         try:
                             multiscale = ocr_processor.process_multiscale(crop)
                             best = apply_consensus_voting(multiscale, min_length=5)
@@ -263,7 +261,9 @@ def main():
 
             # 2.7 Programar snapshot+OCR asíncrono para pendientes
             for pid, inst in active_plates.items():
-                x, y, w, h = inst.bbox
+                x1, y1, x2, y2 = inst.bbox
+                w = x2 - x1
+                h = y2 - y1
                 logging.debug(f"('Área: {w*h}, Umbral: {UMBRAL_SNAPSHOT_AREA}, Estado_OCR:{inst.ocr_status})")
                 if (inst.ocr_status == 'pending'
                         and w * h >= UMBRAL_SNAPSHOT_AREA
@@ -274,11 +274,11 @@ def main():
             # 2.8 Visualización y FPS
             vis = frame_ld.copy()
             for pid, inst in active_plates.items():
-                x, y, w, h = inst.bbox
+                x1, y1, x2, y2 = inst.bbox
                 color = (0,255,0) if inst.ocr_status == 'completed' else (0,0,255)
                 display = inst.ocr_text if inst.ocr_status == 'completed' else pid[:4]
-                cv2.rectangle(vis, (x,y), (x+w,y+h), color, 2)
-                cv2.putText(vis, display, (x, y-5),
+                cv2.rectangle(vis, (x1,y1), (x2,y2), color, 2)
+                cv2.putText(vis, display, (x1, y1-5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
             # Mostrar FPS
