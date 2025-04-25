@@ -138,6 +138,7 @@ def main():
 
     # Pending jobs de snapshot/OCR en background
     pending_jobs = set()
+    invalid_frame_count = 0  # contador de frames inválidos consecutivos
 
     # Función para snapshot y OCR avanzado en background
     def schedule_snapshot_and_ocr(plate_id, inst):
@@ -152,7 +153,6 @@ def main():
             box = next((b for b in refined[0].boxes
                         if float(b.conf[0]) * 100 >= CONFIANZA_PATENTE), None)
             if not box:
-                inst.ocr_status = 'failed'
                 return
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             ox1, oy1 = int(x1 * sx), int(y1 * sy)
@@ -164,21 +164,16 @@ def main():
             text = result.get("ocr_text", "").strip()
             conf = result.get("confidence", 0.0)
 
-            # Si OpenAI o validación de texto falla, marcar failed
-            if not text or not is_valid_plate(text):
-                inst.ocr_status = 'failed'
-                return
-
             # 4) Validar y actualizar instancia
-            inst.ocr_text = text
-            inst.ocr_status = 'completed'
-            inst.ocr_conf = conf
-            # 5) Envío de resultados
-            executor.submit(send_plate_async, roi, hd_snap, text, "", inst.bbox)
-            send_backend(text, roi)
+            if is_valid_plate(text):
+                inst.ocr_text = text
+                inst.ocr_status = 'completed'
+                inst.ocr_conf = conf
+                # 5) Envío de resultados
+                executor.submit(send_plate_async, roi, hd_snap, text, "", inst.bbox)
+                send_backend(text, roi)
 
         except Exception as e:
-            inst.ocr_status = 'failed'
             logging.warning(f"Error snapshot async placa {plate_id}: {e}")
         finally:
             pending_jobs.discard(plate_id)
@@ -192,9 +187,19 @@ def main():
             with suppress_c_stderr():
                 ret, frame_ld = stream_LD.read()
             if not ret or not is_frame_valid(frame_ld):
+                invalid_frame_count += 1
                 logging.warning("Frame inválido detectado, reintentando...")
+                # si hay demasiados consecutivos, reconectamos el stream
+                if invalid_frame_count >= 5:
+                    logging.info("Reconectando stream tras 5 frames inválidos...")
+                    stream_LD.release()
+                    time.sleep(1)
+                    stream_LD = open_stream_with_suppressed_stderr(source)
+                    invalid_frame_count = 0
                 time.sleep(0.5)
                 continue
+            # restablecer contador al recibir un frame válido
+            invalid_frame_count = 0
 
             # 2.2 Preprocesamiento para detección
             inference_frame, scale_x, scale_y = resize_for_inference(frame_ld, max_dim=640)
