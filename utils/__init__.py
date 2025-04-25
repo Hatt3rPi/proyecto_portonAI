@@ -33,7 +33,8 @@ from .image_processing import (
 from .plate_tracker import(
     create_tracker,
     PlateInstance,
-    PlateTrackerManager
+    PlateTrackerManager,
+    compute_iou
 )
 # — Snapshot utils —
 from .snapshot import (
@@ -70,6 +71,7 @@ __all__ = [
     "calculate_roi_for_coverage",
     # tracking
     "create_tracker",
+    "compute_iou",
     "PlateInstance",
     "PlateTrackerManager",
     # snapshot

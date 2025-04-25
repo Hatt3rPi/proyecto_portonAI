@@ -1,12 +1,53 @@
 import time, uuid
+import logging
 import cv2
 from collections import deque
 from .ocr import OCRProcessor
-from .common import compute_iou  # tu función IoU
+
+def compute_iou(boxA, boxB):
+    """
+    Calcula la intersección sobre unión (IoU) entre dos bounding boxes.
+    
+    Args:
+        boxA: Primera caja en formato (x1, y1, x2, y2)
+        boxB: Segunda caja en formato (x1, y1, x2, y2)
+        
+    Returns:
+        float: Valor IoU entre 0.0 y 1.0
+    """
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[2], boxB[2])
+    yB = min(boxA[3], boxB[3])
+    
+    # Calcular área de intersección
+    interArea = max(0, xB - xA) * max(0, yB - yA)
+    
+    # Calcular áreas de cada bounding box
+    boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+    
+    # Calcular IoU
+    denom = float(boxAArea + boxBArea - interArea)
+    return interArea / denom if denom != 0 else 0
 
 def create_tracker():
-    # (copia tu implementación de create_tracker aquí)
-    ...
+    """
+    Crea un tracker CSRT si está disponible. Usa KCF como fallback.
+    
+    Returns:
+        tracker: Un objeto tracker de OpenCV
+    """
+    if hasattr(cv2, 'TrackerCSRT_create'):
+        return cv2.TrackerCSRT_create()
+    elif hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerCSRT_create'):
+        return cv2.legacy.TrackerCSRT_create()
+    elif hasattr(cv2, 'TrackerKCF_create'):
+        return cv2.TrackerKCF_create()
+    elif hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerKCF_create'):
+        return cv2.legacy.TrackerKCF_create()
+    else:
+        raise AttributeError("No se encontró ningún tracker disponible en cv2.")
 
 class PlateInstance:
     def __init__(self, initial_bbox, frame, model_ocr, ocr_names):
