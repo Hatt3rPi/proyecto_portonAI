@@ -52,6 +52,14 @@ if DEBUG_MODE:
 else:
     logging.basicConfig(level=logging.WARNING,
                         format="%(asctime)s [%(levelname)s] %(message)s")
+
+# Añadir FileHandler para guardar todos los logs en portonai.log
+log_file = os.path.join(os.path.dirname(__file__), "portonai.log")
+file_handler = logging.FileHandler(log_file)
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+logging.getLogger().addHandler(file_handler)
+
 logging.getLogger("ultralytics").setLevel(logging.ERROR)
 logging.getLogger("yolov8").setLevel(logging.ERROR)
 
@@ -169,6 +177,8 @@ def main():
                 inst.ocr_text = text
                 inst.ocr_status = 'completed'
                 inst.ocr_conf = conf
+                # Trazar en el archivo de logs la placa reconocida
+                logging.info(f"Placa detectada y almacenada: {text}")
                 # 5) Envío de resultados
                 executor.submit(send_plate_async, roi, hd_snap, text, "", inst.bbox)
                 send_backend(text, roi)
