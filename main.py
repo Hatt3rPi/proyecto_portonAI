@@ -3,7 +3,9 @@
 Sistema PortonAI - Detección y reconocimiento de patentes vehiculares
 
 Este es el punto de entrada principal del sistema PortonAI que
-implementa detección de placas y reconocimiento OCR con tracking híbrido.
+implementa detección de placas y reconocimiento OCR con tracking híbrido
+y procesamiento asíncrono de snapshots/OCR para mantener el bucle de frames
+lo más ligero posible.
 """
 
 import os
@@ -31,7 +33,11 @@ from utils.image_processing import (
     calculate_roi_for_coverage
 )
 from utils.snapshot import SnapshotManager
-from utils.ocr import OCRProcessor, apply_consensus_voting, consensus_by_positions, final_consensus, is_valid_plate
+from utils.ocr import (
+    OCRProcessor, apply_consensus_voting,
+    consensus_by_positions, final_consensus,
+    is_valid_plate
+)
 from utils.api import send_backend, send_plate_async
 
 # --- Nuevo: tracking híbrido centrado en placas ---
@@ -41,45 +47,47 @@ from utils.plate_tracker import PlateTrackerManager
 # Configuración de logging
 # ---------------------------------------------------------------------
 if DEBUG_MODE:
-    logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
+    logging.basicConfig(level=logging.DEBUG,
+                        format="%(asctime)s [%(levelname)s] %(message)s")
 else:
-    logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s")
+    logging.basicConfig(level=logging.WARNING,
+                        format="%(asctime)s [%(levelname)s] %(message)s")
 logging.getLogger("ultralytics").setLevel(logging.ERROR)
 logging.getLogger("yolov8").setLevel(logging.ERROR)
+
+# Executor global para snapshots y OCR en background
+executor = ThreadPoolExecutor(max_workers=4)
 
 
 def main():
     """
     Función principal del sistema PortonAI.
-    Implementa el bucle principal de procesamiento de video y detección.
+    Implementa el bucle principal de procesamiento de video, detección,
+    tracking y visualización, mientras delega snapshots/OCR a hilos.
     """
     # -------------------
     # 1. INICIALIZACIÓN
     # -------------------
     # 1.1 Carga de modelos
     manager = ModelManager()
-    model_plate   = manager.get_plate_model()
-    model_ocr     = manager.get_ocr_model()
+    model_plate = manager.get_plate_model()
+    model_ocr = manager.get_ocr_model()
     ocr_processor = OCRProcessor(model_ocr, manager.get_ocr_names())
 
     # 1.2a Prueba de disponibilidad de trackers OpenCV
     logging.info("Disponibilidad de trackers OpenCV:")
-    checks = []
-    # CSRT estándar
-    checks.append(("CSRT", hasattr(cv2, 'TrackerCSRT_create')))
-    # CSRT legacy
-    checks.append(("CSRT (legacy)", hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerCSRT_create')))
-    # KCF estándar
-    checks.append(("KCF", hasattr(cv2, 'TrackerKCF_create')))
-    # KCF legacy
-    checks.append(("KCF (legacy)", hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerKCF_create')))
+    checks = [
+        ("CSRT", hasattr(cv2, 'TrackerCSRT_create')),
+        ("CSRT (legacy)", hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerCSRT_create')),
+        ("KCF", hasattr(cv2, 'TrackerKCF_create')),
+        ("KCF (legacy)", hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerKCF_create'))
+    ]
     for name, available in checks:
         symbol = "✔" if available else "✖"
         logging.info(f"  {symbol} {name}")
 
     # 1.2b Tracking híbrido y snapshot
-
-    plate_manager    = PlateTrackerManager(
+    plate_manager = PlateTrackerManager(
         model_ocr, manager.get_ocr_names(),
         iou_thresh=0.3, max_missed=5, detect_every=5
     )
@@ -106,7 +114,7 @@ def main():
     stream_h, stream_w = frame_ld.shape[:2]
     logging.info(f"Dimensiones del stream (LD): {stream_w}x{stream_h}")
 
-    # 1.5 Snapshot inicial (mismo que antes)
+    # 1.5 Snapshot inicial
     snapshot_id = "initial"
     future = snapshot_manager.request_update_future(snapshot_id)
     try:
@@ -124,10 +132,50 @@ def main():
     # 1.6 Preparación de UI y auxiliares
     if DEBUG_MODE:
         cv2.namedWindow("PortonAI - Tracking Placas", cv2.WINDOW_NORMAL)
-    executor   = ThreadPoolExecutor(max_workers=2)
-    fps_deque  = deque(maxlen=FPS_DEQUE_MAXLEN)
-    prev_time  = time.time()
+    fps_deque = deque(maxlen=FPS_DEQUE_MAXLEN)
+    prev_time = time.time()
     calib_params = load_calibration_params()
+
+    # Pending jobs de snapshot/OCR en background
+    pending_jobs = set()
+
+    # Función para snapshot y OCR avanzado en background
+    def schedule_snapshot_and_ocr(plate_id, inst):
+        try:
+            # 1) Obtener snapshot HD
+            _, hd_snap = snapshot_manager.request_update_future(plate_id).result(timeout=5)
+
+            # 2) Refinar detección en HD
+            hd_resized, sx, sy = resize_for_inference(hd_snap, max_dim=640)
+            refined = model_plate.predict(hd_resized, device='cuda:0', verbose=False)
+            # Tomar la primera caja válida
+            box = next((b for b in refined[0].boxes
+                        if float(b.conf[0]) * 100 >= CONFIANZA_PATENTE), None)
+            if not box:
+                return
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            ox1, oy1 = int(x1 * sx), int(y1 * sy)
+            ox2, oy2 = int(x2 * sx), int(y2 * sy)
+            roi = hd_snap[oy1:oy2, ox1:ox2]
+
+            # 3) OCR con OpenAI
+            result = ocr_processor.process_plate_image(roi, use_openai=True)
+            text = result.get("ocr_text", "").strip()
+            conf = result.get("confidence", 0.0)
+
+            # 4) Validar y actualizar instancia
+            if is_valid_plate(text):
+                inst.ocr_text = text
+                inst.ocr_status = 'completed'
+                inst.ocr_conf = conf
+                # 5) Envío de resultados
+                executor.submit(send_plate_async, roi, hd_snap, text, "", inst.bbox)
+                send_backend(text, roi)
+
+        except Exception as e:
+            logging.warning(f"Error snapshot async placa {plate_id}: {e}")
+        finally:
+            pending_jobs.discard(plate_id)
 
     # -------------------
     # 2. BUCLE PRINCIPAL
@@ -146,160 +194,88 @@ def main():
             inference_frame, scale_x, scale_y = resize_for_inference(frame_ld, max_dim=640)
             inference_frame = preprocess_frame(inference_frame, calib_params)
 
-            # 2.3 (Opcional) Modo día/noche—puedes conservar o eliminar según prefieras
+            # 2.3 (Opcional) Modo día/noche
             avg_brightness = np.mean(frame_ld)
+            # (puedes conservar tu lógica de cambio de modo aquí)
 
             # 2.4 Detección de placas en frame reducido
-            detections = []
+            all_detections = []
+            ocr_candidates = []
             results = model_plate.predict(inference_frame, device='cuda:0', verbose=False)
             for box in results[0].boxes:
                 conf = float(box.conf[0]) * 100
                 if conf < CONFIANZA_PATENTE:
                     continue
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-                if DEBUG_MODE:
-                    cv2.rectangle(frame_ld, (xh, yh), (xh + w, yh + h), (0,255,0), 2)
                 # escalar a HD
                 xh = int(x1 * scale_x)
                 yh = int(y1 * scale_y)
-                w  = int((x2 - x1) * scale_x)
-                h  = int((y2 - y1) * scale_y)
-                area = w * h
-                if area < 1000:
-                    # ignorar cajas demasiado pequeñas
-                    continue
-                detections.append((xh, yh, w, h))
+                w = int((x2 - x1) * scale_x)
+                h = int((y2 - y1) * scale_y)
+
+                # debug: dibujar todas las detecciones
+                if DEBUG_MODE:
+                    cv2.rectangle(frame_ld, (xh, yh), (xh + w, yh + h), (0,255,0), 2)
+
+                # Tracking para todas las cajas
+                all_detections.append((xh, yh, w, h))
+
+                # Solo candidatas para OCR
+                if w * h >= 1000:
+                    ocr_candidates.append((xh, yh, w, h))
 
             # 2.5 Actualizar tracking híbrido
-            active_plates = plate_manager.update(frame_ld, detections)
+            active_plates = plate_manager.update(frame_ld, all_detections)
 
-            # 2.6 Ejecutar OCR de stream y encolar snapshot
-            plates_for_ocr = []
+            # 2.6 OCR en streaming (ligero)
             for pid, inst in active_plates.items():
-                # OCR en streaming, si aún pendiente
-                if inst.ocr_status == 'pending' and inst.bbox[2]*inst.bbox[3] >= UMBRAL_SNAPSHOT_AREA:
-                    # procesa multiescala directo sobre el recorte
-                    x, y, w, h = inst.bbox
-                    crop = frame_ld[y:y+h, x:x+w]
-                    try:
-                        multiscale = ocr_processor.process_multiscale(crop)
-                        best = apply_consensus_voting(multiscale, min_length=5)
-                        if best is None and multiscale:
-                            best = max(multiscale, key=lambda r: r["global_conf"])
-                        text = (best or {}).get("ocr_text","").strip()
-                        if text and is_valid_plate(text):
-                            inst.ocr_stream = best
-                            inst.ocr_text   = text
-                            inst.ocr_status = 'completed'
-                            logging.info(f"OCR stream válido placa {pid}: {text}")
-                        else:
-                            logging.debug(f"OCR stream inválido o formato incorrecto placa {pid}: {text}")
-                            # inst.ocr_status queda en 'pending' para volver a intentar
-
-                        logging.debug(f"OCR stream placa {pid}: {inst.ocr_stream['ocr_text']}")
-                    except Exception as e:
-                        inst.ocr_status = 'failed'
-                        logging.warning(f"OCR stream error placa {pid}: {e}")
-
-                # Si aún pendiente tras stream, encolar para snapshot
                 if inst.ocr_status == 'pending':
-                    plates_for_ocr.append(pid)
-
-            # 2.7 Procesar snapshot HD + OCR avanzado
-            for pid in plates_for_ocr:
-                inst = active_plates[pid]
-                try:
-                    # 2.7.1 Obtener snapshot HD
-                    future = snapshot_manager.request_update_future(pid)
-                    _, hd_snap = future.result(timeout=5)
-                    if hd_snap is None:
-                        raise Exception("Snapshot no disponible")
-
-                    # 2.7.2 Refinar detección de placa en snapshot
-                    hd_resized, snap_sx, snap_sy = resize_for_inference(hd_snap, max_dim=640)
-                    refined = model_plate.predict(hd_resized, device='cuda:0', verbose=False)
-                    refined_box = None
-                    for box in refined[0].boxes:
-                        if float(box.conf[0])*100 >= CONFIANZA_PATENTE:
-                            rx1, ry1, rx2, ry2 = map(int, box.xyxy[0])
-                            refined_box = (rx1, ry1, rx2, ry2)
-                            break
-                    if refined_box is None:
-                        raise Exception("No se detectó patente en snapshot HD")
-
-                    # 2.7.3 Extraer ROI HD
-                    ox1 = int(refined_box[0]*snap_sx)
-                    oy1 = int(refined_box[1]*snap_sy)
-                    ox2 = int(refined_box[2]*snap_sx)
-                    oy2 = int(refined_box[3]*snap_sy)
-                    roi_hd = hd_snap[oy1:oy2, ox1:ox2]
-
-                    # 2.7.4 OCR multiescala sobre snapshot
-                    multi = []
-                    for pct in range(5, 101, 5):
-                        roi = calculate_roi_for_coverage(
-                            hd_snap,
-                            ((ox1+ox2)/2, (oy1+oy2)/2),
-                            (ox2-ox1)*(oy2-oy1),
-                            pct/100
-                        )
-                        if roi is None:
-                            continue
-                        out = model_ocr.predict(roi, device='cuda:0', verbose=False)
-                        res = ocr_processor.process_ocr_result_detailed(out)
-                        res["coverage"] = pct
-                        multi.append(res)
-
-                    # 2.7.5 Incluir resultado stream si existe
-                    stream_res = inst.ocr_stream or {}
-                    if stream_res.get("ocr_text",""):
-                        multi.append({
-                            "ocr_text": stream_res["ocr_text"],
-                            "global_conf": stream_res.get("average_conf",0),
-                            "predictions": [],
-                            "coverage": 100
-                        })
-
-                    # 2.7.6 Consensos y resultado final
-                    c1 = apply_consensus_voting(multi, min_length=5) or {"ocr_text":"","average_conf":0}
-                    c2 = consensus_by_positions(multi, expected_length=len(c1["ocr_text"]) or 6) or {"ocr_text":"","average_conf":0}
-                    openai_cons = {"ocr_text":"", "average_conf":0}
-                    final = final_consensus([stream_res, c1, c2, openai_cons])
-
-                    # 2.7.7 Actualizar estado y enviar
-                    text = final.get("ocr_text","").strip()
-                    if text and is_valid_plate(text):
-                        inst.ocr_text   = text
-                        inst.ocr_status = 'completed'
-                        inst.ocr_conf   = final.get("confidence", 0.0)
-                        # aquí tus envíos:
-                        x,y,w,h = inst.bbox
+                    x, y, w, h = inst.bbox
+                    if w * h >= UMBRAL_SNAPSHOT_AREA:
                         crop = frame_ld[y:y+h, x:x+w]
-                        executor.submit(send_plate_async, crop, frame_ld, text, "", inst.bbox)
-                        send_backend(text, crop)
-                        logging.info(f"Patente detectada {pid}: {text}")
-                    else:
-                        inst.ocr_status = 'pending'
-                        logging.debug(f"OCR snapshot inválido o formato incorrecto placa {pid}: {text}")
+                        try:
+                            multiscale = ocr_processor.process_multiscale(crop)
+                            best = apply_consensus_voting(multiscale, min_length=5)
+                            if best is None and multiscale:
+                                best = max(multiscale, key=lambda r: r["confidence"])
+                            text = (best or {}).get("ocr_text","").strip()
+                            if text and is_valid_plate(text):
+                                inst.ocr_stream = best
+                                inst.ocr_text = text
+                                inst.ocr_status = 'completed'
+                                logging.info(f"OCR stream válido placa {pid}: {text}")
+                            else:
+                                logging.debug(f"OCR stream inválido placa {pid}: {text}")
+                            logging.debug(f"OCR stream placa {pid}: {inst.ocr_stream.get('ocr_text','')}")
+                        except Exception as e:
+                            inst.ocr_status = 'failed'
+                            logging.warning(f"OCR stream error placa {pid}: {e}")
 
-
-                except Exception as e:
-                    logging.warning(f"Error OCR snapshot placa {pid}: {e}")
+            # 2.7 Programar snapshot+OCR asíncrono para pendientes
+            for pid, inst in active_plates.items():
+                x, y, w, h = inst.bbox
+                if (inst.ocr_status == 'pending'
+                        and w * h >= UMBRAL_SNAPSHOT_AREA
+                        and pid not in pending_jobs):
+                    pending_jobs.add(pid)
+                    executor.submit(schedule_snapshot_and_ocr, pid, inst)
 
             # 2.8 Visualización y FPS
             vis = frame_ld.copy()
             for pid, inst in active_plates.items():
                 x, y, w, h = inst.bbox
-                color = (0,255,0) if inst.ocr_status=='completed' else (0,0,255)
+                color = (0,255,0) if inst.ocr_status == 'completed' else (0,0,255)
+                display = inst.ocr_text if inst.ocr_status == 'completed' else pid[:4]
                 cv2.rectangle(vis, (x,y), (x+w,y+h), color, 2)
-                cv2.putText(vis, pid[:4], (x, y-5),
+                cv2.putText(vis, display, (x, y-5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
+            # Mostrar FPS
             now = time.time()
-            fps = 1.0/(now-prev_time) if now>prev_time else 0.0
+            fps = 1.0 / (now - prev_time) if now > prev_time else 0.0
             prev_time = now
             fps_deque.append(fps)
-            fps_avg = sum(fps_deque)/len(fps_deque)
+            fps_avg = sum(fps_deque) / len(fps_deque)
 
             if DEBUG_MODE:
                 cv2.putText(vis, f"FPS: {fps:.1f} Avg: {fps_avg:.1f}", (10,30),
