@@ -30,11 +30,9 @@ from utils.image_processing import (
     process_image, load_calibration_params, save_calibration_params,
     is_frame_valid, calculate_roi_for_coverage
 )
-from utils.tracking import (
-    compute_iou, find_vehicle_type_for_plate, 
-    update_plate_area_history, compute_smoothed_rate_from_history,
-    predict_time_to_threshold
-)
+
+# Importar el manager híbrido de tracking de placas
+from utils.plate_tracker import PlateTrackerManager
 from utils.snapshot import SnapshotManager, fetch_hd_snapshot, delete_snapshot_file
 from utils.ocr import OCRProcessor
 from utils.api import send_backend, send_plate_async
