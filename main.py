@@ -152,6 +152,7 @@ def main():
             box = next((b for b in refined[0].boxes
                         if float(b.conf[0]) * 100 >= CONFIANZA_PATENTE), None)
             if not box:
+                inst.ocr_status = 'failed'
                 return
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             ox1, oy1 = int(x1 * sx), int(y1 * sy)
@@ -163,16 +164,21 @@ def main():
             text = result.get("ocr_text", "").strip()
             conf = result.get("confidence", 0.0)
 
+            # Si OpenAI o validación de texto falla, marcar failed
+            if not text or not is_valid_plate(text):
+                inst.ocr_status = 'failed'
+                return
+
             # 4) Validar y actualizar instancia
-            if is_valid_plate(text):
-                inst.ocr_text = text
-                inst.ocr_status = 'completed'
-                inst.ocr_conf = conf
-                # 5) Envío de resultados
-                executor.submit(send_plate_async, roi, hd_snap, text, "", inst.bbox)
-                send_backend(text, roi)
+            inst.ocr_text = text
+            inst.ocr_status = 'completed'
+            inst.ocr_conf = conf
+            # 5) Envío de resultados
+            executor.submit(send_plate_async, roi, hd_snap, text, "", inst.bbox)
+            send_backend(text, roi)
 
         except Exception as e:
+            inst.ocr_status = 'failed'
             logging.warning(f"Error snapshot async placa {plate_id}: {e}")
         finally:
             pending_jobs.discard(plate_id)
