@@ -30,15 +30,11 @@ from .image_processing import (
     calculate_roi_for_coverage,
 )
 
-# — Tracking utils —
-from .tracking import (
-    compute_iou,
-    find_vehicle_type_for_plate,
-    update_plate_area_history,
-    compute_smoothed_rate_from_history,
-    predict_time_to_threshold,
+from .plate_tracker import(
+    create_tracker,
+    PlateInstance,
+    PlateTrackerManager
 )
-
 # — Snapshot utils —
 from .snapshot import (
     SnapshotManager,
@@ -73,11 +69,9 @@ __all__ = [
     "is_frame_valid",
     "calculate_roi_for_coverage",
     # tracking
-    "compute_iou",
-    "find_vehicle_type_for_plate",
-    "update_plate_area_history",
-    "compute_smoothed_rate_from_history",
-    "predict_time_to_threshold",
+    "create_tracker",
+    "PlateInstance",
+    "PlateTrackerManager",
     # snapshot
     "SnapshotManager",
     "fetch_hd_snapshot",
