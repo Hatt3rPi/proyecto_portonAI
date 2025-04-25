@@ -97,6 +97,7 @@ class PlateInstance:
         self.ocr_status   = 'pending'    # pending / completed / failed
         self.ocr_text     = ''
         # instancia de OCR personalizada
+        self.ocr_stream = {}
         self.ocr_processor = OCRProcessor(model_ocr, ocr_names)
 
     def update_tracker(self, frame):

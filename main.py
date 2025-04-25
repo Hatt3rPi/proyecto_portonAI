@@ -259,12 +259,12 @@ def main():
                                 logging.debug(f"OCR stream inválido placa {pid}: {text}")
                             logging.debug(f"OCR stream placa {pid}: {inst.ocr_stream.get('ocr_text','')}")
                         except Exception as e:
-                            inst.ocr_status = 'failed'
                             logging.warning(f"OCR stream error placa {pid}: {e}")
 
             # 2.7 Programar snapshot+OCR asíncrono para pendientes
             for pid, inst in active_plates.items():
                 x, y, w, h = inst.bbox
+                logging.debug(f"('Área: {w*h}, Umbral: {UMBRAL_SNAPSHOT_AREA}, Estado_OCR:{inst.ocr_status})")
                 if (inst.ocr_status == 'pending'
                         and w * h >= UMBRAL_SNAPSHOT_AREA
                         and pid not in pending_jobs):
