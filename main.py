@@ -31,7 +31,7 @@ from utils.image_processing import (
     calculate_roi_for_coverage
 )
 from utils.snapshot import SnapshotManager
-from utils.ocr import OCRProcessor, apply_consensus_voting, consensus_by_positions, final_consensus
+from utils.ocr import OCRProcessor, apply_consensus_voting, consensus_by_positions, final_consensus, is_valid_plate
 from utils.api import send_backend, send_plate_async
 
 # --- Nuevo: tracking híbrido centrado en placas ---
@@ -186,8 +186,16 @@ def main():
                         best = apply_consensus_voting(multiscale, min_length=5)
                         if best is None and multiscale:
                             best = max(multiscale, key=lambda r: r["global_conf"])
-                        inst.ocr_stream = best or {"ocr_text":"", "average_conf":0.0}
-                        inst.ocr_status = 'completed' if inst.ocr_stream.get("ocr_text","") else 'failed'
+                        text = (best or {}).get("ocr_text","").strip()
+                        if text and is_valid_plate(text):
+                            inst.ocr_stream = best
+                            inst.ocr_text   = text
+                            inst.ocr_status = 'completed'
+                            logging.info(f"OCR stream válido placa {pid}: {text}")
+                        else:
+                            logging.debug(f"OCR stream inválido o formato incorrecto placa {pid}: {text}")
+                            # inst.ocr_status queda en 'pending' para volver a intentar
+
                         logging.debug(f"OCR stream placa {pid}: {inst.ocr_stream['ocr_text']}")
                     except Exception as e:
                         inst.ocr_status = 'failed'
@@ -259,16 +267,21 @@ def main():
                     final = final_consensus([stream_res, c1, c2, openai_cons])
 
                     # 2.7.7 Actualizar estado y enviar
-                    inst.ocr_text     = final["ocr_text"]
-                    inst.ocr_status   = 'completed' if final["ocr_text"] else 'failed'
-                    inst.ocr_conf     = final["average_conf"]
-
-                    if inst.ocr_status == 'completed':
-                        x, y, w, h = inst.bbox
+                    text = final.get("ocr_text","").strip()
+                    if text and is_valid_plate(text):
+                        inst.ocr_text   = text
+                        inst.ocr_status = 'completed'
+                        inst.ocr_conf   = final.get("confidence", 0.0)
+                        # aquí tus envíos:
+                        x,y,w,h = inst.bbox
                         crop = frame_ld[y:y+h, x:x+w]
-                        executor.submit(send_plate_async, crop, frame_ld, final["ocr_text"], "", inst.bbox)
-                        send_backend(final["ocr_text"], crop)
-                        logging.info(f"Patente detectada {pid}: {final['ocr_text']}")
+                        executor.submit(send_plate_async, crop, frame_ld, text, "", inst.bbox)
+                        send_backend(text, crop)
+                        logging.info(f"Patente detectada {pid}: {text}")
+                    else:
+                        inst.ocr_status = 'pending'
+                        logging.debug(f"OCR snapshot inválido o formato incorrecto placa {pid}: {text}")
+
 
                 except Exception as e:
                     logging.warning(f"Error OCR snapshot placa {pid}: {e}")

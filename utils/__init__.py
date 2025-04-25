@@ -54,6 +54,7 @@ from .ocr import (
     apply_consensus_voting,
     consensus_by_positions,
     final_consensus,
+    is_valid_plate
 )
 
 __all__ = [
@@ -85,4 +86,5 @@ __all__ = [
     "apply_consensus_voting",
     "consensus_by_positions",
     "final_consensus",
+    "is_valid_plate",
 ]

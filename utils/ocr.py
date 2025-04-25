@@ -1,10 +1,11 @@
 """
 Módulo de procesamiento OCR y consenso para PortonAI
-Incluye la clase OCRProcessor para gestionar todos los flujos de OCR.
+Incluye la clase OCRProcessor y funciones auxiliares para validar placas.
 """
 
 from typing import List, Dict, Any, Optional
 import logging
+import re
 import numpy as np
 import cv2
 
@@ -13,6 +14,39 @@ from config import (
     CONSENSUS_EXPECTED_LENGTH_METHOD,
     CONSENSUS_FIXED_LENGTH
 )
+
+
+def is_valid_plate(plate: str) -> bool:
+    """
+    Valida si el texto dado corresponde a una placa patente válida.
+    Lógicas incluidas para:
+      - Vehículos estándar (6 chars, bloques AA/BB/99)
+      - Vehículos policiales (Z/M/RP/A + 4 dígitos)
+      - Bomberos (CB + letra + 3 dígitos)
+      - Fuerzas Armadas (EJTO + 4 dígitos)
+      - Provisoria (PR + 3 dígitos)
+      - Motocicletas (5 chars, XXX?9)
+    """
+    p = plate.upper().strip()
+    # Vehículo estándar: 6 caracteres, bloques 2L-2L|2D-2D-LD
+    if re.fullmatch(r"[A-Z]{2}(?:[A-Z]{2}|\d{2})\d{2}", p):
+        return True
+    # Vehículo policial: Z/M/A + 4 digits o RP +4 digits
+    if re.fullmatch(r"(?:Z|M|A)\d{4}|RP\d{4}", p):
+        return True
+    # Bomberos: CB + letra municipio + 3 dígitos
+    if re.fullmatch(r"CB[A-Z]\d{3}", p):
+        return True
+    # Fuerzas Armadas: EJTO + 4 dígitos
+    if re.fullmatch(r"EJTO\d{4}", p):
+        return True
+    # Provisoria: PR + 3 dígitos
+    if re.fullmatch(r"PR\d{3}", p):
+        return True
+    # Motocicletas: 5 chars, primero 3 letras, cualquier caracter alfanumérico, último dígito
+    if re.fullmatch(r"[A-Z]{3}[A-Z0-9]\d", p):
+        return True
+    return False
 
 
 def process_ocr_result_detailed(
@@ -27,16 +61,15 @@ def process_ocr_result_detailed(
 
     Returns:
         Dict con:
-          - 'ocr_text' (str): Texto concatenado de caracteres detectados
-          - 'confidence' (float): Confianza media geométrica [0–100]
-          - 'predictions' (List[Dict]): Cada predicción con keys 'x', 'confidence', 'char'
+          - 'ocr_text' (str)
+          - 'confidence' (float)
+          - 'predictions' (List[Dict])
     """
     if not ocr_result or len(ocr_result) == 0 or not hasattr(ocr_result[0], "boxes"):
         return {"ocr_text": "", "confidence": 0.0, "predictions": []}
-
     try:
         batch = ocr_result[0]
-        preds: List[Dict[str, Any]] = []
+        preds = []
         for box in batch.boxes:
             try:
                 coords = box.xyxy[0].cpu().numpy() if hasattr(box.xyxy[0], "cpu") else box.xyxy[0]
@@ -49,14 +82,11 @@ def process_ocr_result_detailed(
                 preds.append({"x": x_center, "confidence": conf, "char": char})
             except Exception as e:
                 logging.warning(f"OCR prediction malformed, se omite: {e}")
-                continue
-
         preds.sort(key=lambda p: p["x"])
         confidences = [p["confidence"] for p in preds]
         geom_mean = float(np.prod(confidences) ** (1.0 / len(confidences))) if confidences else 0.0
         text = "".join(p["char"] for p in preds)
         return {"ocr_text": text, "confidence": geom_mean, "predictions": preds}
-
     except Exception as e:
         logging.error(f"Error en process_ocr_result_detailed: {e}")
         return {"ocr_text": "", "confidence": 0.0, "predictions": []}
@@ -68,7 +98,7 @@ def apply_consensus_voting(
 ) -> Optional[Dict[str, Any]]:
     """
     Vota entre múltiples lecturas OCR para elegir la más frecuente y confiable.
-
+    Filtra también por validez de placa.
     Args:
         ocr_results: Lista de dicts con keys 'ocr_text' y 'confidence'
         min_length: Longitud mínima de texto para considerar; si None, usa CONSENSUS_MIN_LENGTH
@@ -81,26 +111,30 @@ def apply_consensus_voting(
         O None si no hay lecturas válidas.
     """
     length_threshold = min_length or CONSENSUS_MIN_LENGTH
-    valid = [r for r in ocr_results if len(r.get("ocr_text","").strip()) >= length_threshold]
+    # Solo textos con longitud mínima y válidos según is_valid_plate
+    valid = [r for r in ocr_results
+             if len(r.get("ocr_text","")) >= length_threshold
+             and is_valid_plate(r.get("ocr_text",""))]
     if not valid:
         if not ocr_results:
             return None
-        best = max(ocr_results, key=lambda r: r.get("confidence", 0.0))
+        # Escoge el de mayor confianza, pero validar primero
+        candidates = [r for r in ocr_results if is_valid_plate(r.get("ocr_text",""))]
+        if not candidates:
+            return None
+        best = max(candidates, key=lambda r: r.get("confidence", 0.0))
         return {"ocr_text": best.get("ocr_text",""), "confidence": best.get("confidence",0.0), "count": 1}
-
-    tally: Dict[str, Dict[str, float]] = {}
+    tally = {}
     for r in valid:
         txt = r["ocr_text"].upper().strip()
         info = tally.setdefault(txt, {"count":0, "total_conf":0.0})
-        info["count"]   += 1
+        info["count"] += 1
         info["total_conf"] += r.get("confidence",0.0)
-
     best_text, best_info = "", {"count":-1, "avg_conf":-1.0}
     for txt, info in tally.items():
         avg_conf = info["total_conf"] / info["count"]
-        if (info["count"] > best_info["count"]) or (info["count"] == best_info["count"] and avg_conf > best_info["avg_conf"]):
+        if info["count"] > best_info["count"] or (info["count"] == best_info["count"] and avg_conf > best_info["avg_conf"]):
             best_text, best_info = txt, {"count": info["count"], "avg_conf": avg_conf}
-
     return {"ocr_text": best_text, "confidence": best_info["avg_conf"], "count": best_info["count"]}
 
 
@@ -118,16 +152,15 @@ def consensus_by_positions(
     Returns:
         Dict con 'ocr_text' y 'confidence', o None si falla.
     """
-    filtered = [r for r in ocr_results if r.get("ocr_text","" ).strip()]
+    filtered = [r for r in ocr_results if r.get("ocr_text","" )]
     if not filtered:
         return None
-
     if expected_length is None:
         lengths = [len(r["ocr_text"]) for r in filtered]
         method = CONSENSUS_EXPECTED_LENGTH_METHOD.lower()
         try:
             if method == "mode":
-                from statistics import mode, StatisticsError
+                from statistics import mode
                 expected_length = mode(lengths)
             elif method == "median":
                 expected_length = int(np.median(lengths))
@@ -137,8 +170,7 @@ def consensus_by_positions(
                 expected_length = int(np.median(lengths))
         except Exception:
             expected_length = int(np.median(lengths))
-
-    letter_stats: List[Dict[str, Dict[str, float]]] = [{} for _ in range(expected_length)]
+    letter_stats = [{} for _ in range(expected_length)]
     for r in filtered:
         for i, pred in enumerate(r.get("predictions", [])):
             if i >= expected_length:
@@ -149,11 +181,10 @@ def consensus_by_positions(
                 continue
             stats = letter_stats[i]
             entry = stats.setdefault(char, {"count":0, "total_conf":0.0})
-            entry["count"]       += 1
-            entry["total_conf"]   += conf
-
-    result_chars: List[str] = []
-    confidences:  List[float] = []
+            entry["count"]     += 1
+            entry["total_conf"] += conf
+    result_chars = []
+    confidences = []
     for stats in letter_stats:
         if not stats:
             result_chars.append("?")
@@ -166,7 +197,6 @@ def consensus_by_positions(
                     best_char, best_avg = char, avg_conf
             result_chars.append(best_char)
             confidences.append(best_avg)
-
     text = "".join(result_chars)
     avg_conf = float(np.mean(confidences)) if confidences else 0.0
     return {"ocr_text": text, "confidence": avg_conf}
@@ -186,12 +216,10 @@ def final_consensus(
     """
     if not consensus_list:
         return {"ocr_text": "", "confidence": 0.0}
-
-    freq: Dict[str,int] = {}
+    freq = {}
     for c in consensus_list:
         txt = c.get("ocr_text","" )
         freq[txt] = freq.get(txt,0) + 1
-
     max_f = max(freq.values(), default=0)
     cands = [txt for txt,f in freq.items() if f==max_f]
     filtered = [c for c in consensus_list if c.get("ocr_text","" ) in cands]
@@ -212,6 +240,7 @@ class OCRProcessor:
     def process_multiscale(self, plate_img: Any) -> List[Dict[str, Any]]:
         """
         Ejecuta OCR en escalas del 50% al 100% por stream.
+        Descarta lecturas no válidas antes de agregarlas.
         Args:
             plate_img: ROI de la placa
         Returns:
@@ -224,6 +253,10 @@ class OCRProcessor:
                 roi = cv2.resize(plate_img, None, fx=fx, fy=fy)
                 ocr_out = self.model_ocr.predict(roi, device='cuda:0', verbose=False)
                 proc = process_ocr_result_detailed(ocr_out, self.names)
+                text = proc.get('ocr_text', '').strip()
+                if not text or not is_valid_plate(text):
+                    logging.debug(f"OCR multiescala descarta '{text}' inválido a escala {scale}%")
+                    continue
                 proc['coverage'] = scale
                 results.append(proc)
             except Exception as e:
@@ -246,18 +279,14 @@ class OCRProcessor:
         if use_openai:
             from scripts.monitoreo_patentes.openai_plate_reader import read_plate_openai
             text = read_plate_openai(plate_img, None) or ""
-            if len(text) >= CONSENSUS_MIN_LENGTH:
+            if len(text) >= CONSENSUS_MIN_LENGTH and is_valid_plate(text):
                 return {"ocr_text": text, "confidence": 100.0}
-            else:
-                logging.debug(f"OCR OpenAI lectura demasiado corta ({len(text)}< {CONSENSUS_MIN_LENGTH}), descartada")
-                return {"ocr_text": "", "confidence": 0.0}
-
-        # OCR tradicional con YOLO en escala 100%
+            logging.debug(f"OCR OpenAI descarta '{text}' inválido")
+            return {"ocr_text": "", "confidence": 0.0}
         ocr_out = self.model_ocr.predict(plate_img, device='cuda:0', verbose=False)
         res = process_ocr_result_detailed(ocr_out, self.names)
         text = res.get('ocr_text', '').strip()
-        if len(text) >= CONSENSUS_MIN_LENGTH:
+        if len(text) >= CONSENSUS_MIN_LENGTH and is_valid_plate(text):
             return {"ocr_text": text, "confidence": res.get('confidence', 0.0)}
-        else:
-            logging.debug(f"OCR lectura demasiado corta ({len(text)}< {CONSENSUS_MIN_LENGTH}), descartada")
-            return {"ocr_text": "", "confidence": 0.0}
+        logging.debug(f"OCR tradicional descarta '{text}' inválido")
+        return {"ocr_text": "", "confidence": 0.0}
