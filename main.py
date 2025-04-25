@@ -230,16 +230,11 @@ def main():
                 # escalar a HD
                 xh = int(x1 * scale_x)
                 yh = int(y1 * scale_y)
-                x2h = int(x2 * scale_x)
-                y2h = int(y2 * scale_y)
-                area = (x2h - xh) * (y2h - yh)
+                w = int((x2 - x1) * scale_x)
+                h = int((y2 - y1) * scale_y)
 
-                # debug: dibujar todas las detecciones
-                if DEBUG_MODE:
-                    cv2.rectangle(frame_ld, (xh, yh), (x2h, y2h), (0,255,0), 2)
-
-                # Tracking para todas las cajas en formato (x1,y1,x2,y2)
-                all_detections.append((xh, yh, x2h, y2h))
+                # Tracking para todas las cajas en formato (x, y, w, h)
+                all_detections.append((xh, yh, w, h))
 
             # 2.5 Actualizar tracking híbrido
             active_plates = plate_manager.update(frame_ld, all_detections)
@@ -247,11 +242,9 @@ def main():
             # 2.6 OCR en streaming (ligero)
             for pid, inst in active_plates.items():
                 if inst.ocr_status == 'pending':
-                    x1, y1, x2, y2 = inst.bbox
-                    w = x2 - x1
-                    h = y2 - y1
+                    x, y, w, h = inst.bbox
                     if w * h >= UMBRAL_SNAPSHOT_AREA:
-                        crop = frame_ld[y1:y2, x1:x2]
+                        crop = frame_ld[y:y+h, x:x+w]
                         try:
                             multiscale = ocr_processor.process_multiscale(crop)
                             best = apply_consensus_voting(multiscale, min_length=5)
@@ -271,10 +264,8 @@ def main():
 
             # 2.7 Programar snapshot+OCR asíncrono para pendientes
             for pid, inst in active_plates.items():
-                x1, y1, x2, y2 = inst.bbox
-                w = x2 - x1
-                h = y2 - y1
-                logging.debug(f"('Área: {w*h}, Umbral: {UMBRAL_SNAPSHOT_AREA}, Estado_OCR:{inst.ocr_status})")
+                x, y, w, h = inst.bbox
+                logging.debug(f"Placa_id: {pid}, 'Área: {w*h}, Umbral: {UMBRAL_SNAPSHOT_AREA}, Estado_OCR:{inst.ocr_status}")
                 if (inst.ocr_status == 'pending'
                         and w * h >= UMBRAL_SNAPSHOT_AREA
                         and pid not in pending_jobs):
@@ -284,12 +275,29 @@ def main():
             # 2.8 Visualización y FPS
             vis = frame_ld.copy()
             for pid, inst in active_plates.items():
-                x1, y1, x2, y2 = inst.bbox
+                x, y, w, h = inst.bbox
+                # el color verde si ya completó OCR, rojo si sigue pendiente
                 color = (0,255,0) if inst.ocr_status == 'completed' else (0,0,255)
-                display = inst.ocr_text if inst.ocr_status == 'completed' else pid[:4]
-                cv2.rectangle(vis, (x1,y1), (x2,y2), color, 2)
-                cv2.putText(vis, display, (x1, y1-5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+                # si ya tienes texto válido, muéstralo; si no, muestra un sub-id
+                if inst.ocr_status == 'completed' and inst.ocr_text:
+                    label = inst.ocr_text
+                else:
+                    label = pid[:4]
+
+                # dibujamos el cuadro
+                cv2.rectangle(vis, (x, y), (x + w, y + h), color, 2)
+                # y justo encima, el texto de la matrícula
+                cv2.putText(
+                    vis,
+                    label,
+                    (x, y - 10),                          # 10px por encima del recuadro
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,                                   # ligeramente más grande
+                    color,
+                    2
+                )
+
 
             # Mostrar FPS
             now = time.time()

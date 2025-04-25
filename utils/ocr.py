@@ -44,8 +44,8 @@ def is_valid_plate(plate: str) -> bool:
     if re.fullmatch(r"PR\d{3}", p):
         return True
     # Motocicletas: 5 chars, primero 3 letras, cualquier caracter alfanumérico, último dígito
-    if re.fullmatch(r"[A-Z]{3}[A-Z0-9]\d", p):
-        return True
+    #if re.fullmatch(r"[A-Z]{3}[A-Z0-9]\d", p):
+    #    return True
     return False
 
 
@@ -259,7 +259,7 @@ class OCRProcessor:
                 proc = process_ocr_result_detailed(ocr_out, self.names)
                 text = proc.get('ocr_text', '').strip()
                 if not text or not is_valid_plate(text):
-                    logging.debug(f"OCR multiescala descarta '{text}' inválido a escala {scale}%")
+                    #logging.debug(f"OCR multiescala descarta '{text}' inválido a escala {scale}%")
                     continue
                 proc['coverage'] = scale
                 results.append(proc)
