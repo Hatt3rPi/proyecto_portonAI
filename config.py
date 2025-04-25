@@ -38,7 +38,7 @@ ONLINE_MODE = True
 # ---------------------------------------------------------------------
 # CONSTANTES Y PARÁMETROS BÁSICOS
 # ---------------------------------------------------------------------
-FPS_DEQUE_MAXLEN = 10
+FPS_DEQUE_MAXLEN = 20
 MODELO_OBJETOS = os.path.join(BASE, "modelos", "yolov8n.pt")
 MODELO_PATENTE = os.path.join(BASE, "modelos", "modelo_PATENTE.engine")
 MODELO_OCR = os.path.join(BASE, "modelos", "modelo_OCR.engine")

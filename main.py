@@ -62,7 +62,23 @@ def main():
     model_ocr     = manager.get_ocr_model()
     ocr_processor = OCRProcessor(model_ocr, manager.get_ocr_names())
 
-    # 1.2 Tracking híbrido y snapshot
+    # 1.2a Prueba de disponibilidad de trackers OpenCV
+    logging.info("Disponibilidad de trackers OpenCV:")
+    checks = []
+    # CSRT estándar
+    checks.append(("CSRT", hasattr(cv2, 'TrackerCSRT_create')))
+    # CSRT legacy
+    checks.append(("CSRT (legacy)", hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerCSRT_create')))
+    # KCF estándar
+    checks.append(("KCF", hasattr(cv2, 'TrackerKCF_create')))
+    # KCF legacy
+    checks.append(("KCF (legacy)", hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerKCF_create')))
+    for name, available in checks:
+        symbol = "✔" if available else "✖"
+        logging.info(f"  {symbol} {name}")
+
+    # 1.2b Tracking híbrido y snapshot
+
     plate_manager    = PlateTrackerManager(
         model_ocr, manager.get_ocr_names(),
         iou_thresh=0.3, max_missed=5, detect_every=5
@@ -83,11 +99,11 @@ def main():
 
     # 1.4 Lectura primer frame
     with suppress_c_stderr():
-        ret, frame_hd = stream_LD.read()
-    if not ret or not is_frame_valid(frame_hd):
+        ret, frame_ld = stream_LD.read()
+    if not ret or not is_frame_valid(frame_ld):
         logging.error("No se pudo leer el primer frame del stream")
         sys.exit(1)
-    stream_h, stream_w = frame_hd.shape[:2]
+    stream_h, stream_w = frame_ld.shape[:2]
     logging.info(f"Dimensiones del stream (LD): {stream_w}x{stream_h}")
 
     # 1.5 Snapshot inicial (mismo que antes)
@@ -120,18 +136,18 @@ def main():
         try:
             # 2.1 Captura de frame
             with suppress_c_stderr():
-                ret, frame_hd = stream_LD.read()
-            if not ret or not is_frame_valid(frame_hd):
+                ret, frame_ld = stream_LD.read()
+            if not ret or not is_frame_valid(frame_ld):
                 logging.warning("Frame inválido detectado, reintentando...")
                 time.sleep(0.5)
                 continue
 
             # 2.2 Preprocesamiento para detección
-            inference_frame, scale_x, scale_y = resize_for_inference(frame_hd, max_dim=640)
+            inference_frame, scale_x, scale_y = resize_for_inference(frame_ld, max_dim=640)
             inference_frame = preprocess_frame(inference_frame, calib_params)
 
             # 2.3 (Opcional) Modo día/noche—puedes conservar o eliminar según prefieras
-            avg_brightness = np.mean(frame_hd)
+            avg_brightness = np.mean(frame_ld)
 
             # 2.4 Detección de placas en frame reducido
             detections = []
@@ -141,6 +157,8 @@ def main():
                 if conf < CONFIANZA_PATENTE:
                     continue
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
+                if DEBUG_MODE:
+                    cv2.rectangle(frame_ld, (xh, yh), (xh + w, yh + h), (0,255,0), 2)
                 # escalar a HD
                 xh = int(x1 * scale_x)
                 yh = int(y1 * scale_y)
@@ -151,12 +169,9 @@ def main():
                     # ignorar cajas demasiado pequeñas
                     continue
                 detections.append((xh, yh, w, h))
-                if DEBUG_MODE:
-                    cv2.rectangle(frame_hd, (xh, yh), (xh + w, yh + h), (0,255,0), 2)
-
 
             # 2.5 Actualizar tracking híbrido
-            active_plates = plate_manager.update(frame_hd, detections)
+            active_plates = plate_manager.update(frame_ld, detections)
 
             # 2.6 Ejecutar OCR de stream y encolar snapshot
             plates_for_ocr = []
@@ -165,7 +180,7 @@ def main():
                 if inst.ocr_status == 'pending' and inst.bbox[2]*inst.bbox[3] >= UMBRAL_SNAPSHOT_AREA:
                     # procesa multiescala directo sobre el recorte
                     x, y, w, h = inst.bbox
-                    crop = frame_hd[y:y+h, x:x+w]
+                    crop = frame_ld[y:y+h, x:x+w]
                     try:
                         multiscale = ocr_processor.process_multiscale(crop)
                         best = apply_consensus_voting(multiscale, min_length=5)
@@ -250,8 +265,8 @@ def main():
 
                     if inst.ocr_status == 'completed':
                         x, y, w, h = inst.bbox
-                        crop = frame_hd[y:y+h, x:x+w]
-                        executor.submit(send_plate_async, crop, frame_hd, final["ocr_text"], "", inst.bbox)
+                        crop = frame_ld[y:y+h, x:x+w]
+                        executor.submit(send_plate_async, crop, frame_ld, final["ocr_text"], "", inst.bbox)
                         send_backend(final["ocr_text"], crop)
                         logging.info(f"Patente detectada {pid}: {final['ocr_text']}")
 
@@ -259,7 +274,7 @@ def main():
                     logging.warning(f"Error OCR snapshot placa {pid}: {e}")
 
             # 2.8 Visualización y FPS
-            vis = frame_hd.copy()
+            vis = frame_ld.copy()
             for pid, inst in active_plates.items():
                 x, y, w, h = inst.bbox
                 color = (0,255,0) if inst.ocr_status=='completed' else (0,0,255)
