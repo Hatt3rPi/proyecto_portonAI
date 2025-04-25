@@ -35,7 +35,7 @@ from utils.tracking import (
     update_plate_area_history, compute_smoothed_rate_from_history,
     predict_time_to_threshold
 )
-from utils.snapshot import SnapshotManager, fetch_hd_snapshot
+from utils.snapshot import SnapshotManager, fetch_hd_snapshot, delete_snapshot_file
 from utils.ocr import OCRProcessor
 from utils.api import send_backend, send_plate_async
 from utils.ocr import apply_consensus_voting, consensus_by_positions, final_consensus
@@ -354,7 +354,9 @@ def main():
                             refined_box = (rx1, ry1, rx2, ry2)
                             break
                     if refined_box is None:
-                        logging.debug(f"Snapshot {snapshot_filename} sin detección de patentes")
+                        logging.debug(f"Snapshot {snapshot_filename} - Paso 3.1: sin detección de patentes")
+                        # Eliminar el snapshot ya que no se detectó una patente
+                        delete_snapshot_file(snapshot_filename)
                         raise Exception("No se detectó patente en snapshot HD")
 
                     orig_x1 = int(refined_box[0] * snap_scale_x)
@@ -362,10 +364,6 @@ def main():
                     orig_x2 = int(refined_box[2] * snap_scale_x)
                     orig_y2 = int(refined_box[3] * snap_scale_y)
                     roi_hd_snapshot_refined = hd_snapshot[orig_y1:orig_y2, orig_x1:orig_x2]
-
-                    plate_area = (orig_x2 - orig_x1) * (orig_y2 - orig_y1)
-                    center_x = (orig_x1 + orig_x2) / 2.0
-                    center_y = (orig_y1 + orig_y2) / 2.0
 
                     # OCR multiescala en diferentes regiones de cobertura
                     multi_scale_results = []

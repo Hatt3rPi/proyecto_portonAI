@@ -30,3 +30,6 @@ npm-debug.log*
 *.swp
 *.swo
 .DS_Store
+
+# Imagenes
+.jpg

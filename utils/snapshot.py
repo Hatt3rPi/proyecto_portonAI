@@ -171,3 +171,22 @@ def crop_plate_region(image, bbox, padding=10):
     cropped = image[y1:y2, x1:x2]
     
     return cropped
+
+def delete_snapshot_file(filepath):
+    """
+    Elimina un archivo de snapshot si existe
+    
+    Args:
+        filepath: Ruta del archivo a eliminar
+        
+    Returns:
+        bool: True si se eliminó correctamente o no existía, False si hubo error
+    """
+    try:
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            logging.debug(f"Snapshot eliminado: {filepath}")
+        return True
+    except Exception as e:
+        logging.error(f"Error al eliminar snapshot {filepath}: {e}")
+        return False
