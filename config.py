@@ -5,79 +5,69 @@ Configuraciones globales para el sistema PortonAI
 """
 
 import os
-import logging
-from collections import deque
 import sys
 import json
+import logging
+from collections import deque
 from dotenv import load_dotenv
+from typing import Optional
 
 # Cargar variables de entorno desde .env
 load_dotenv()
 
 # Paths base
 BASE = os.path.abspath(os.path.dirname(__file__))
-MON_PATH = os.path.join(BASE, "scripts", "monitoreo_patentes")
-sys.path.insert(0, MON_PATH)
 
 # ---------------------------------------------------------------------
-# CONFIGURACIÓN GENERAL: Modo DEBUG
+# CONFIGURACIÓN GENERAL: Modo DEBUG y logging
 # ---------------------------------------------------------------------
-DEBUG_MODE = True  # Cambia a True para activar el modo visual de depuración
-ONLINE_MODE = True  # O False si deseas usar un archivo de video
-
-# ---------------------------------------------------------------------
-# CONFIGURACIÓN DE LOGGING
-# ---------------------------------------------------------------------
+DEBUG_MODE = True  # Cambia a False para producción
 if DEBUG_MODE:
     logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 else:
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s")
-
 logging.getLogger("ultralytics").setLevel(logging.ERROR)
 logging.getLogger("yolov8").setLevel(logging.ERROR)
 
 # ---------------------------------------------------------------------
-# CONSTANTES Y PARÁMETROS
+# CONSTANTES Y PARÁMETROS BÁSICOS
 # ---------------------------------------------------------------------
 FPS_DEQUE_MAXLEN = 10
-
 MODELO_OBJETOS = os.path.join(BASE, "modelos", "yolov8n.pt")
 MODELO_PATENTE = os.path.join(BASE, "modelos", "modelo_PATENTE.engine")
 MODELO_OCR = os.path.join(BASE, "modelos", "modelo_OCR.engine")
 
-# Cargar valores sensibles desde variables de entorno
+# Variables sensibles via env
 try:
     TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 except KeyError:
-    logging.error("Variable de entorno TELEGRAM_TOKEN no encontrada. Debe establecer esta variable.")
+    logging.error("Variable TELEGRAM_TOKEN no encontrada.")
     sys.exit(1)
 
-# Convertir CHAT_ID desde string a set de integers
 try:
     chat_id_str = os.environ["TELEGRAM_CHAT_ID"]
     chat_id_str = chat_id_str.replace("{", "").replace("}", "")
-    TELEGRAM_CHAT_ID = set(int(id_.strip()) for id_ in chat_id_str.split(",") if id_.strip())
+    TELEGRAM_CHAT_ID = set(int(i.strip()) for i in chat_id_str.split(",") if i.strip())
     if not TELEGRAM_CHAT_ID:
-        raise ValueError("El conjunto de TELEGRAM_CHAT_ID está vacío")
-except Exception as e:
-    logging.error(f"Error al procesar TELEGRAM_CHAT_ID: {e}. Debe configurar correctamente esta variable de entorno.")
+        raise ValueError
+except Exception:
+    logging.error("Error al procesar TELEGRAM_CHAT_ID.")
     sys.exit(1)
 
-CONFIANZA_PATENTE = 60  # porcentaje
-DISPLAY_DURATION = 2
+CONFIANZA_PATENTE = 60       # porcentaje mínimo para detección
+DISPLAY_DURATION = 2         # segundos para mantener en pantalla
 SNAPSHOT_LATENCY_MS = 500
 SENT_PLATES = {}
-UMBRAL_SNAPSHOT_AREA = 1200
+UMBRAL_SNAPSHOT_AREA = 1200  # px² mínimo para snapshot HD
 
-# Tiempo mínimo (en segundos) para considerar una nueva detección del mismo vehículo
-VEHICLE_MEMORY_TIME = 15
-# Umbral de IOU para considerar que es el mismo vehículo
+VEHICLE_MEMORY_TIME = 15     # seg para considerar vehículo “nuevo”
 SAME_VEHICLE_IOU_THRESHOLD = 0.3
 
 CALIBRATION_FILE = os.path.join(BASE, "calibration_params.json")
 
-# Valores por defecto basados en la estructura real de calibration_params.json
-#   (véase archivo calibration_params.json) :contentReference[oaicite:0]{index=0}
+# ---------------------------------------------------------------------
+# ESQUEMA REAL de calibration_params.json y valores por defecto
+# ---------------------------------------------------------------------
 DEFAULT_CALIBRATION_PARAMS = {
     "camera_matrix": [
         [1000.0, 0.0, 320.0],
@@ -99,33 +89,47 @@ DEFAULT_CALIBRATION_PARAMS = {
     "calibration_date": "1970-01-01T00:00:00"
 }
 
-# Definición de umbrales para cambiar de modo (para evitar fluctuaciones)
-NIGHT_THRESHOLD = 50  # Por debajo de este valor se activa el modo noche
-DAY_THRESHOLD = 70    # Por encima de este valor se activa el modo día
+# ---------------------------------------------------------------------
+# PARÁMETROS DE CONSENSO de OCR
+# ---------------------------------------------------------------------
+from typing import Optional
 
-# URL para snapshot HD (imagen de mayor resolución)
+# Longitud mínima para incluir una lectura en el consenso
+CONSENSUS_MIN_LENGTH: int = 5
+# Estrategia para determinar la longitud esperada de la matrícula:
+#   'mode'  → el valor más frecuente entre lecturas
+#   'median'→ la mediana de las longitudes
+#   'fixed' → usar CONSENSUS_FIXED_LENGTH
+CONSENSUS_EXPECTED_LENGTH_METHOD: str = "mode"
+# Si se usa estrategia 'fixed', aquí se define:
+CONSENSUS_FIXED_LENGTH: Optional[int] = None
+
+# ---------------------------------------------------------------------
+# UMBRALES DÍA/NOCHE
+# ---------------------------------------------------------------------
+NIGHT_THRESHOLD = 50   # brillo
+DAY_THRESHOLD = 70     # brillo
+
+# ---------------------------------------------------------------------
+# URLs y endpoints
+# ---------------------------------------------------------------------
 SNAPSHOT_URL = "http://192.168.0.124/cgi-bin/snapshot.cgi?1"
 URL_HD = "rtsp://admin:emilia09@192.168.0.124:554/cam/realmonitor?channel=1&subtype=1&tcp"
 
+BACKEND_URL = "https://porton-ia-back-production.up.railway.app/accesLog/registro"
+try:
+    headers_json = os.environ["BACKEND_HEADERS"]
+    BACKEND_HEADERS = json.loads(headers_json)
+    if "Content-Type" not in BACKEND_HEADERS or "Authorization" not in BACKEND_HEADERS:
+        raise ValueError
+except Exception:
+    logging.error("Error al cargar BACKEND_HEADERS.")
+    sys.exit(1)
+
 # ---------------------------------------------------------------------
-# CONSTANTES PARA OCR
+# CONSTANTES OCR (ROI y velocidad)
 # ---------------------------------------------------------------------
 WIDTH_OCR = 640
 HEIGHT_OCR = 320
 AREA_OCR = WIDTH_OCR * HEIGHT_OCR
-
-# ------------------- CONSTANTE PARA CONTROL DE VELOCIDAD -------------------
-FAST_AREA_RATE_THRESHOLD = 0.05  # px²/ms; umbral para clasificar "rápido" vs "lento"
-
-# ---------------------------------------------------------------------
-# CONFIGURACIÓN DE BACKEND
-# ---------------------------------------------------------------------
-BACKEND_URL = "https://porton-ia-back-production.up.railway.app/accesLog/registro"
-try:
-    backend_headers_json = os.environ["BACKEND_HEADERS"]
-    BACKEND_HEADERS = json.loads(backend_headers_json)
-    if "Content-Type" not in BACKEND_HEADERS or "Authorization" not in BACKEND_HEADERS:
-        raise ValueError("BACKEND_HEADERS debe contener 'Content-Type' y 'Authorization'")
-except Exception as e:
-    logging.error(f"Error al cargar BACKEND_HEADERS: {e}. Debe configurar correctamente esta variable de entorno.")
-    sys.exit(1)
+FAST_AREA_RATE_THRESHOLD = 0.05  # px²/ms

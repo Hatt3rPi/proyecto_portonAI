@@ -38,9 +38,8 @@ from utils.tracking import (
 from utils.snapshot import SnapshotManager, fetch_hd_snapshot
 from utils.ocr import OCRProcessor
 from utils.api import send_backend, send_plate_async
-from utils.consensus import (
-    apply_consensus_voting, consensus_by_positions, final_consensus
-)
+from utils.ocr import apply_consensus_voting, consensus_by_positions, final_consensus
+
 
 def main():
     """

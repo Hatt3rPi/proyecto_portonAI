@@ -1,172 +1,253 @@
 """
-Procesamiento OCR para reconocimiento de texto en patentes
+Módulo de procesamiento OCR y consenso para PortonAI
+Incluye la clase OCRProcessor para gestionar todos los flujos de OCR.
 """
 
-import numpy as np
+from typing import List, Dict, Any, Optional
 import logging
+import numpy as np
 import cv2
-import sys
-import os
-from typing import List, Dict, Any, Optional, Tuple
-import concurrent.futures
-from models import ModelManager
 
-# Ajuste para importar correctamente el módulo openai_plate_reader
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../scripts/monitoreo_patentes')))
-from openai_plate_reader import read_plate_openai, process_plate_image as openai_process_plate_image
+from config import (
+    CONSENSUS_MIN_LENGTH,
+    CONSENSUS_EXPECTED_LENGTH_METHOD,
+    CONSENSUS_FIXED_LENGTH
+)
+
+
+def process_ocr_result_detailed(
+    ocr_result: Any,
+    model_ocr_names: List[str]
+) -> Dict[str, Any]:
+    """
+    Convierte resultados crudos de YOLO (OCR) en un dict estandarizado.
+    Args:
+        ocr_result: Resultado de llama a modelo_OCR.predict(...)
+        model_ocr_names: Lista de nombres de clases (caracteres)
+
+    Returns:
+        Dict con:
+          - 'ocr_text' (str): Texto concatenado de caracteres detectados
+          - 'confidence' (float): Confianza media geométrica [0–100]
+          - 'predictions' (List[Dict]): Cada predicción con keys 'x', 'confidence', 'char'
+    """
+    if not ocr_result or len(ocr_result) == 0 or not hasattr(ocr_result[0], "boxes"):
+        return {"ocr_text": "", "confidence": 0.0, "predictions": []}
+
+    try:
+        batch = ocr_result[0]
+        preds: List[Dict[str, Any]] = []
+        for box in batch.boxes:
+            try:
+                coords = box.xyxy[0].cpu().numpy() if hasattr(box.xyxy[0], "cpu") else box.xyxy[0]
+                x1, y1, x2, y2 = map(int, coords)
+                x_center = (x1 + x2) / 2.0
+                raw_conf = box.conf[0] if hasattr(box.conf, "__iter__") else box.conf
+                conf = float(raw_conf) * 100
+                cls_idx = int(box.cls[0]) if hasattr(box, "cls") else 0
+                char = model_ocr_names[cls_idx] if cls_idx < len(model_ocr_names) else ""
+                preds.append({"x": x_center, "confidence": conf, "char": char})
+            except Exception as e:
+                logging.warning(f"OCR prediction malformed, se omite: {e}")
+                continue
+
+        preds.sort(key=lambda p: p["x"])
+        confidences = [p["confidence"] for p in preds]
+        geom_mean = float(np.prod(confidences) ** (1.0 / len(confidences))) if confidences else 0.0
+        text = "".join(p["char"] for p in preds)
+        return {"ocr_text": text, "confidence": geom_mean, "predictions": preds}
+
+    except Exception as e:
+        logging.error(f"Error en process_ocr_result_detailed: {e}")
+        return {"ocr_text": "", "confidence": 0.0, "predictions": []}
+
+
+def apply_consensus_voting(
+    ocr_results: List[Dict[str, Any]],
+    min_length: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Vota entre múltiples lecturas OCR para elegir la más frecuente y confiable.
+
+    Args:
+        ocr_results: Lista de dicts con keys 'ocr_text' y 'confidence'
+        min_length: Longitud mínima de texto para considerar; si None, usa CONSENSUS_MIN_LENGTH
+
+    Returns:
+        Dict con:
+          - 'ocr_text' (str)
+          - 'confidence' (float)
+          - 'count' (int)
+        O None si no hay lecturas válidas.
+    """
+    length_threshold = min_length or CONSENSUS_MIN_LENGTH
+    valid = [r for r in ocr_results if len(r.get("ocr_text","").strip()) >= length_threshold]
+    if not valid:
+        if not ocr_results:
+            return None
+        best = max(ocr_results, key=lambda r: r.get("confidence", 0.0))
+        return {"ocr_text": best.get("ocr_text",""), "confidence": best.get("confidence",0.0), "count": 1}
+
+    tally: Dict[str, Dict[str, float]] = {}
+    for r in valid:
+        txt = r["ocr_text"].upper().strip()
+        info = tally.setdefault(txt, {"count":0, "total_conf":0.0})
+        info["count"] += 1
+        info["total_conf"] += r.get("confidence",0.0)
+
+    best_text, best_info = "", {"count":-1, "avg_conf":-1.0}
+    for txt, info in tally.items():
+        avg_conf = info["total_conf"] / info["count"]
+        if (info["count"] > best_info["count"]) or (info["count"] == best_info["count"] and avg_conf > best_info["avg_conf"]):
+            best_text, best_info = txt, {"count":info["count"], "avg_conf":avg_conf}
+
+    return {"ocr_text": best_text, "confidence": best_info["avg_conf"], "count": best_info["count"]}
+
+
+def consensus_by_positions(
+    ocr_results: List[Dict[str, Any]],
+    expected_length: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Construye la matrícula carácter a carácter mediante votación por posición.
+
+    Args:
+        ocr_results: Lista de dicts con 'predictions' (x, confidence, char)
+        expected_length: Longitud esperada; si None, calculada según config
+
+    Returns:
+        Dict con 'ocr_text' y 'confidence', o None si falla.
+    """
+    filtered = [r for r in ocr_results if r.get("ocr_text","" ).strip()]
+    if not filtered:
+        return None
+
+    if expected_length is None:
+        lengths = [len(r["ocr_text"]) for r in filtered]
+        method = CONSENSUS_EXPECTED_LENGTH_METHOD.lower()
+        try:
+            if method == "mode":
+                from statistics import mode, StatisticsError
+                expected_length = mode(lengths)
+            elif method == "median":
+                expected_length = int(np.median(lengths))
+            elif method == "fixed" and CONSENSUS_FIXED_LENGTH:
+                expected_length = CONSENSUS_FIXED_LENGTH
+            else:
+                expected_length = int(np.median(lengths))
+        except Exception:
+            expected_length = int(np.median(lengths))
+
+    letter_stats: List[Dict[str, Dict[str, float]]] = [{} for _ in range(expected_length)]
+    for r in filtered:
+        for i, pred in enumerate(r.get("predictions", [])):
+            if i >= expected_length:
+                break
+            char = pred.get("char","" ).upper().strip()
+            conf = pred.get("confidence",0.0)
+            if not char:
+                continue
+            stats = letter_stats[i]
+            entry = stats.setdefault(char, {"count":0, "total_conf":0.0})
+            entry["count"] += 1
+            entry["total_conf"] += conf
+
+    result_chars: List[str] = []
+    confidences: List[float] = []
+    for stats in letter_stats:
+        if not stats:
+            result_chars.append("?")
+            confidences.append(0.0)
+        else:
+            best_char, best_avg = "?", -1.0
+            for char, info in stats.items():
+                avg_conf = info["total_conf"]/info["count"]
+                if avg_conf > best_avg:
+                    best_char, best_avg = char, avg_conf
+            result_chars.append(best_char)
+            confidences.append(best_avg)
+
+    text = "".join(result_chars)
+    avg_conf = float(np.mean(confidences)) if confidences else 0.0
+    return {"ocr_text": text, "confidence": avg_conf}
+
+
+def final_consensus(
+    consensus_list: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """
+    Combina múltiples consensos para definir la matrícula final.
+
+    Args:
+        consensus_list: Liste de dicts con 'ocr_text' y 'confidence'
+
+    Returns:
+        Dict con 'ocr_text' y 'confidence'.
+    """
+    if not consensus_list:
+        return {"ocr_text": "", "confidence": 0.0}
+
+    freq: Dict[str,int] = {}
+    for c in consensus_list:
+        txt = c.get("ocr_text","" )
+        freq[txt] = freq.get(txt,0) + 1
+
+    max_f = max(freq.values(), default=0)
+    cands = [txt for txt,f in freq.items() if f==max_f]
+    filtered = [c for c in consensus_list if c.get("ocr_text","" ) in cands]
+    best = max(filtered, key=lambda c: c.get("confidence",0.0))
+    return {"ocr_text":best.get("ocr_text",""), "confidence":best.get("confidence",0.0)}
+
 
 class OCRProcessor:
     """
-    Clase para manejar todos los procesos relacionados con OCR
+    Clase que centraliza flujos de OCR y consenso:
+      - process_multiscale: OCR en múltiples escalas desde frame stream
+      - process_plate_image: OCR de snapshot o OpenAI
     """
-    def __init__(self):
-        """Inicializa el procesador OCR con los modelos necesarios"""
-        logging.debug("Inicializando OCRProcessor")
-        self.model_manager = ModelManager()
-        self.ocr_model = self.model_manager.get_ocr_model()
-        self.ocr_names = self.model_manager.get_ocr_names()
-    
-    def process_ocr_result_detailed(self, ocr_result):
+    def __init__(self, model_ocr, model_ocr_names):
+        self.model_ocr = model_ocr
+        self.names = model_ocr_names
+
+    def process_multiscale(self, plate_img: Any) -> List[Dict[str, Any]]:
         """
-        Procesa un resultado OCR de YOLO en formato detallado
-        
+        Ejecuta OCR en escalas del 50% al 100% por stream.
         Args:
-            ocr_result: Resultado de predicción del modelo OCR
-            
+            plate_img: ROI de la placa
         Returns:
-            dict: Diccionario con texto OCR y detalles de confianza
+            Lista de dicts procesados por process_ocr_result_detailed
         """
-        if not ocr_result or len(ocr_result) == 0:
-            return {"ocr_text": "", "global_conf": 0.0, "predictions": []}
-        
-        ocr_result = ocr_result[0]
-        predictions = []
-        
-        for box in ocr_result.boxes:
-            if hasattr(box.xyxy[0], "cpu"):
-                coords_box = box.xyxy[0].cpu().numpy()
-            else:
-                coords_box = box.xyxy[0]
-                
-            x1_box, y1_box, x2_box, y2_box = map(int, coords_box)
-            x_center = (x1_box + x2_box) / 2.0
-            conf = float(box.conf[0]) if hasattr(box.conf, "__iter__") else float(box.conf)
-            cls_index = int(box.cls[0]) if hasattr(box, "cls") else 0
-            
-            char_pred = self.ocr_names[cls_index] if cls_index < len(self.ocr_names) else ""
-            predictions.append({"x": x_center, "confidence": conf, "char": char_pred})
-            
-        # Ordenar predicciones por posición x
-        predictions.sort(key=lambda p: p["x"])
-        
-        # Calcular confianza global
-        confidences = [p["confidence"] for p in predictions]
-        if confidences:
-            product = 1.0
-            for c in confidences:
-                product *= c
-            global_conf = product ** (1 / len(confidences))
-        else:
-            global_conf = 0.0
-            
-        # Obtener texto final
-        ocr_text = "".join(p["char"] for p in predictions)
-        
-        return {"ocr_text": ocr_text, "global_conf": global_conf * 100, "predictions": predictions}
-    
-    def process_plate_image(self, plate_img, use_openai=False, api_key=None):
+        results = []
+        for scale in range(50, 105, 5):
+            try:
+                fx = fy = scale / 100.0
+                roi = cv2.resize(plate_img, None, fx=fx, fy=fy)
+                ocr_out = self.model_ocr.predict(roi, device='cuda:0', verbose=False)
+                proc = process_ocr_result_detailed(ocr_out, self.names)
+                proc['coverage'] = scale
+                results.append(proc)
+            except Exception as e:
+                logging.warning(f"Error OCR multiescala escala {scale}%: {e}")
+        return results
+
+    def process_plate_image(
+        self,
+        plate_img: Any,
+        use_openai: bool = False
+    ) -> Dict[str, Any]:
         """
-        Procesa una imagen de patente, usando OpenAI si se especifica
-        
+        Ejecuta OCR sobre snapshot HD o usa OpenAI.
         Args:
-            plate_img: Imagen de la patente
-            use_openai: Si es True, usa OpenAI para reconocer la patente
-            api_key: API Key de OpenAI (opcional)
-        
+            plate_img: Imagen de la placa (snapshot o frame)
+            use_openai: Si True, usar OpenAI en lugar de YOLO
         Returns:
-            Diccionario con el resultado del OCR
+            Dict resultante con 'ocr_text' y 'confidence'
         """
         if use_openai:
-            # Integrar con la función de openai_plate_reader.py
-            return openai_process_plate_image(plate_img, use_openai=True)
-        else:
-            # Usar OCR local
-            result = self.process_multiscale(plate_img)
-            consensus = self.apply_consensus_voting(result)
-            if consensus:
-                return consensus
-            elif result:
-                return max(result, key=lambda r: r["global_conf"])
-            else:
-                return {"ocr_text": "", "average_conf": 0.0}
-    
-    def process_multiscale(self, plate_img):
-        """
-        Procesa una imagen de patente con múltiples escalas
-        
-        Args:
-            plate_img: Imagen de la patente
-            
-        Returns:
-            list: Resultados del OCR en diferentes escalas
-        """
-        ocr_stream_results_multiscale = []
-        for scale in range(50, 105, 5):
-            scale_factor = scale / 100.0
-            try:
-                scaled_roi = cv2.resize(plate_img, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LINEAR)
-                ocr_result = self.ocr_model.predict(scaled_roi, device='cuda:0', verbose=False)
-                processed_result = self.process_ocr_result_detailed(ocr_result)
-                processed_result["coverage"] = scale
-                ocr_stream_results_multiscale.append(processed_result)
-            except Exception as e:
-                logging.warning(f"Error en OCR stream multiescala con escala {scale}%: {e}")
-                
-        return ocr_stream_results_multiscale
-    
-    @staticmethod
-    def apply_consensus_voting(ocr_results, min_length=5):
-        """
-        Aplica un algoritmo de consenso por votación a los resultados OCR
-        
-        Args:
-            ocr_results: Lista de resultados OCR
-            min_length: Longitud mínima del texto para considerar en el consenso
-            
-        Returns:
-            dict: Resultado del consenso
-        """
-        if not ocr_results:
-            return None
-            
-        consensus_dict = {}
-        for res in ocr_results:
-            text = res["ocr_text"].upper().strip()
-            if len(text) < min_length:
-                continue
-            if text not in consensus_dict:
-                consensus_dict[text] = {"count": 0, "total_conf": 0.0}
-            consensus_dict[text]["count"] += 1
-            consensus_dict[text]["total_conf"] += res["global_conf"]
-            
-        if not consensus_dict:
-            if not ocr_results:
-                return None
-            best_res = max(ocr_results, key=lambda r: r["global_conf"])
-            return {"ocr_text": best_res["ocr_text"].upper().strip(),
-                    "average_conf": best_res["global_conf"],
-                    "count": 1}
-                    
-        best_text = None
-        best_count = -1
-        best_avg_conf = -1.0
-        
-        for text, info in consensus_dict.items():
-            count = info["count"]
-            avg_conf = info["total_conf"] / count
-            if count > best_count or (count == best_count and avg_conf > best_avg_conf):
-                best_text = text
-                best_count = count
-                best_avg_conf = avg_conf
-                
-        return {"ocr_text": best_text, "average_conf": best_avg_conf, "count": best_count}
+            from scripts.monitoreo_patentes.openai_plate_reader import read_plate_openai
+            text = read_plate_openai(plate_img, None) or ""
+            return {"ocr_text": text, "confidence": 100.0 if text else 0.0}
+        # OCR tradicional con YOLO en escala 100%
+        ocr_out = self.model_ocr.predict(plate_img, device='cuda:0', verbose=False)
+        res = process_ocr_result_detailed(ocr_out, self.names)
+        return {"ocr_text": res['ocr_text'], "confidence": res['confidence']}
