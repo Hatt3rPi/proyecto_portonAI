@@ -33,7 +33,7 @@ from utils.image_processing import (
     calculate_roi_for_coverage
 )
 from utils.snapshot import SnapshotManager, fetch_hd_snapshot, delete_snapshot_file
-from utils.ocr import OCRProcessor, apply_consensus_voting, consensus_by_positions, final_consensus
+from utils.ocr import OCRProcessor, apply_consensus_voting, consensus_by_positions, final_consensus, process_ocr_result_detailed
 from utils.api import send_backend, send_plate_async
 
 # --- Nuevo: tracking híbrido centrado en placas ---
