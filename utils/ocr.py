@@ -92,14 +92,14 @@ def apply_consensus_voting(
     for r in valid:
         txt = r["ocr_text"].upper().strip()
         info = tally.setdefault(txt, {"count":0, "total_conf":0.0})
-        info["count"] += 1
+        info["count"]   += 1
         info["total_conf"] += r.get("confidence",0.0)
 
     best_text, best_info = "", {"count":-1, "avg_conf":-1.0}
     for txt, info in tally.items():
         avg_conf = info["total_conf"] / info["count"]
         if (info["count"] > best_info["count"]) or (info["count"] == best_info["count"] and avg_conf > best_info["avg_conf"]):
-            best_text, best_info = txt, {"count":info["count"], "avg_conf":avg_conf}
+            best_text, best_info = txt, {"count": info["count"], "avg_conf": avg_conf}
 
     return {"ocr_text": best_text, "confidence": best_info["avg_conf"], "count": best_info["count"]}
 
@@ -149,11 +149,11 @@ def consensus_by_positions(
                 continue
             stats = letter_stats[i]
             entry = stats.setdefault(char, {"count":0, "total_conf":0.0})
-            entry["count"] += 1
-            entry["total_conf"] += conf
+            entry["count"]       += 1
+            entry["total_conf"]   += conf
 
     result_chars: List[str] = []
-    confidences: List[float] = []
+    confidences:  List[float] = []
     for stats in letter_stats:
         if not stats:
             result_chars.append("?")
@@ -196,7 +196,7 @@ def final_consensus(
     cands = [txt for txt,f in freq.items() if f==max_f]
     filtered = [c for c in consensus_list if c.get("ocr_text","" ) in cands]
     best = max(filtered, key=lambda c: c.get("confidence",0.0))
-    return {"ocr_text":best.get("ocr_text",""), "confidence":best.get("confidence",0.0)}
+    return {"ocr_text": best.get("ocr_text",""), "confidence": best.get("confidence",0.0)}
 
 
 class OCRProcessor:
@@ -207,7 +207,7 @@ class OCRProcessor:
     """
     def __init__(self, model_ocr, model_ocr_names):
         self.model_ocr = model_ocr
-        self.names = model_ocr_names
+        self.names     = model_ocr_names
 
     def process_multiscale(self, plate_img: Any) -> List[Dict[str, Any]]:
         """
@@ -246,8 +246,18 @@ class OCRProcessor:
         if use_openai:
             from scripts.monitoreo_patentes.openai_plate_reader import read_plate_openai
             text = read_plate_openai(plate_img, None) or ""
-            return {"ocr_text": text, "confidence": 100.0 if text else 0.0}
+            if len(text) >= CONSENSUS_MIN_LENGTH:
+                return {"ocr_text": text, "confidence": 100.0}
+            else:
+                logging.debug(f"OCR OpenAI lectura demasiado corta ({len(text)}< {CONSENSUS_MIN_LENGTH}), descartada")
+                return {"ocr_text": "", "confidence": 0.0}
+
         # OCR tradicional con YOLO en escala 100%
         ocr_out = self.model_ocr.predict(plate_img, device='cuda:0', verbose=False)
         res = process_ocr_result_detailed(ocr_out, self.names)
-        return {"ocr_text": res['ocr_text'], "confidence": res['confidence']}
+        text = res.get('ocr_text', '').strip()
+        if len(text) >= CONSENSUS_MIN_LENGTH:
+            return {"ocr_text": text, "confidence": res.get('confidence', 0.0)}
+        else:
+            logging.debug(f"OCR lectura demasiado corta ({len(text)}< {CONSENSUS_MIN_LENGTH}), descartada")
+            return {"ocr_text": "", "confidence": 0.0}
