@@ -71,19 +71,19 @@ def main():
 
     # 1.3 Apertura de stream
     source = URL_HD if ONLINE_MODE else "scripts/monitoreo_patentes/video.mp4"
-    cap_hd = open_stream_with_suppressed_stderr(source)
-    if not cap_hd.isOpened():
+    stream_LD = open_stream_with_suppressed_stderr(source)
+    if not stream_LD.isOpened():
         logging.error("No se pudo abrir el stream, reintentando en 2s...")
         time.sleep(2)
-        cap_hd = open_stream_with_suppressed_stderr(source)
-        if not cap_hd.isOpened():
+        stream_LD = open_stream_with_suppressed_stderr(source)
+        if not stream_LD.isOpened():
             logging.error("Error fatal: No se pudo abrir el stream tras reintentar")
             sys.exit(1)
     logging.info("Stream abierto exitosamente")
 
     # 1.4 Lectura primer frame
     with suppress_c_stderr():
-        ret, frame_hd = cap_hd.read()
+        ret, frame_hd = stream_LD.read()
     if not ret or not is_frame_valid(frame_hd):
         logging.error("No se pudo leer el primer frame del stream")
         sys.exit(1)
@@ -116,11 +116,11 @@ def main():
     # -------------------
     # 2. BUCLE PRINCIPAL
     # -------------------
-    while cap_hd.isOpened():
+    while stream_LD.isOpened():
         try:
             # 2.1 Captura de frame
             with suppress_c_stderr():
-                ret, frame_hd = cap_hd.read()
+                ret, frame_hd = stream_LD.read()
             if not ret or not is_frame_valid(frame_hd):
                 logging.warning("Frame inválido detectado, reintentando...")
                 time.sleep(0.5)
@@ -285,7 +285,7 @@ def main():
             continue
 
     # 3. Limpieza final
-    cap_hd.release()
+    stream_LD.release()
     if DEBUG_MODE:
         cv2.destroyAllWindows()
     snapshot_manager.stop()
