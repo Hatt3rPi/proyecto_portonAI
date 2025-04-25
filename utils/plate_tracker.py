@@ -34,21 +34,40 @@ def compute_iou(boxA, boxB):
 def create_tracker():
     """
     Crea un tracker CSRT si está disponible. Usa KCF como fallback.
-    
-    Returns:
-        tracker: Un objeto tracker de OpenCV
+    Si ninguno está presente, retorna un tracker dummy para que
+    el sistema siga funcionando (se confiará sólo en detección por IoU).
     """
-    if hasattr(cv2, 'TrackerCSRT_create'):
+    # Intentar CSRT
+    try:
         return cv2.TrackerCSRT_create()
-    elif hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerCSRT_create'):
-        return cv2.legacy.TrackerCSRT_create()
-    elif hasattr(cv2, 'TrackerKCF_create'):
-        return cv2.TrackerKCF_create()
-    elif hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerKCF_create'):
-        return cv2.legacy.TrackerKCF_create()
-    else:
-        raise AttributeError("No se encontró ningún tracker disponible en cv2.")
+    except Exception:
+        pass
 
+    # Intentar CSRT en módulo legacy
+    try:
+        return cv2.legacy.TrackerCSRT_create()
+    except Exception:
+        pass
+
+    # Intentar KCF
+    try:
+        return cv2.TrackerKCF_create()
+    except Exception:
+        pass
+
+    # Intentar KCF en módulo legacy
+    try:
+        return cv2.legacy.TrackerKCF_create()
+    except Exception:
+        pass
+
+    # Fallback: dummy tracker
+    logging.warning("Trackers de OpenCV no disponibles; usando DummyTracker (sólo IoU).")
+    class DummyTracker:
+        def init(self, frame, bbox): pass
+        def update(self, frame): return False, None
+
+    return DummyTracker()
 class PlateInstance:
     def __init__(self, initial_bbox, frame, model_ocr, ocr_names):
         self.id           = str(uuid.uuid4())

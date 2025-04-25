@@ -12,28 +12,26 @@ import time
 import logging
 import cv2
 import numpy as np
-import uuid
 from collections import deque
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 # Importaciones de configuración y modelos
 from config import (
     DEBUG_MODE, ONLINE_MODE, URL_HD, CONFIANZA_PATENTE,
-    FPS_DEQUE_MAXLEN, DISPLAY_DURATION, UMBRAL_SNAPSHOT_AREA,
-    FAST_AREA_RATE_THRESHOLD, NIGHT_THRESHOLD, DAY_THRESHOLD
+    FPS_DEQUE_MAXLEN, UMBRAL_SNAPSHOT_AREA,
+    NIGHT_THRESHOLD, DAY_THRESHOLD
 )
 from models import ModelManager
 
 # Utilidades de sistema y preprocesamiento
 from utils.suppression import open_stream_with_suppressed_stderr, suppress_c_stderr
 from utils.image_processing import (
-    resize_for_inference, preprocess_frame, correct_plate_orientation,
-    load_calibration_params, save_calibration_params, is_frame_valid,
+    resize_for_inference, preprocess_frame,
+    load_calibration_params, is_frame_valid,
     calculate_roi_for_coverage
 )
-from utils.snapshot import SnapshotManager, fetch_hd_snapshot, delete_snapshot_file
-from utils.ocr import OCRProcessor, apply_consensus_voting, consensus_by_positions, final_consensus, process_ocr_result_detailed
+from utils.snapshot import SnapshotManager
+from utils.ocr import OCRProcessor, apply_consensus_voting, consensus_by_positions, final_consensus
 from utils.api import send_backend, send_plate_async
 
 # --- Nuevo: tracking híbrido centrado en placas ---
