@@ -52,7 +52,7 @@ def main():
     modelo_OBJETOSy = model_manager.get_object_model()
     modelo_PATENTESy = model_manager.get_plate_model()
     modelo_OCRy = model_manager.get_ocr_model()
-    ocr_processor = OCRProcessor()
+    ocr_processor    = OCRProcessor(modelo_OCRy, model_manager.get_ocr_names())
     
     snapshot_manager = SnapshotManager()
     logging.debug("Intentando abrir stream desde: %s", URL_HD)
