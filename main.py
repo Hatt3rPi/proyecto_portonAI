@@ -132,7 +132,6 @@ def main():
 
             # 2.3 (Opcional) Modo día/noche—puedes conservar o eliminar según prefieras
             avg_brightness = np.mean(frame_hd)
-            # if avg_brightness < NIGHT_THRESHOLD: ...
 
             # 2.4 Detección de placas en frame reducido
             detections = []
@@ -147,9 +146,14 @@ def main():
                 yh = int(y1 * scale_y)
                 w  = int((x2 - x1) * scale_x)
                 h  = int((y2 - y1) * scale_y)
+                area = w * h
+                if area < 1000:
+                    # ignorar cajas demasiado pequeñas
+                    continue
                 detections.append((xh, yh, w, h))
                 if DEBUG_MODE:
-                    cv2.rectangle(frame_hd, (xh, yh), (xh+w, yh+h), (0,255,0), 2)
+                    cv2.rectangle(frame_hd, (xh, yh), (xh + w, yh + h), (0,255,0), 2)
+
 
             # 2.5 Actualizar tracking híbrido
             active_plates = plate_manager.update(frame_hd, detections)

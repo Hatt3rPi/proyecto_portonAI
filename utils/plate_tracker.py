@@ -1,4 +1,5 @@
-import time, uuid
+import time
+import uuid
 import logging
 import cv2
 from collections import deque
@@ -33,41 +34,55 @@ def compute_iou(boxA, boxB):
 
 def create_tracker():
     """
-    Crea un tracker CSRT si está disponible. Usa KCF como fallback.
-    Si ninguno está presente, retorna un tracker dummy para que
-    el sistema siga funcionando (se confiará sólo en detección por IoU).
+    Crea un tracker de OpenCV. Intenta CSRT, KCF, MOSSE, MIL y MEDIANFLOW.
+    Si no se encuentra ninguno, devuelve un tracker dummy que no trackea.
     """
-    # Intentar CSRT
-    try:
-        return cv2.TrackerCSRT_create()
-    except Exception:
-        pass
+    tracker_constructors = []
+    # CSRT
+    if hasattr(cv2, 'TrackerCSRT_create'):
+        tracker_constructors.append(('CSRT', cv2.TrackerCSRT_create))
+    if hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerCSRT_create'):
+        tracker_constructors.append(('CSRT_legacy', cv2.legacy.TrackerCSRT_create))
+    # KCF
+    if hasattr(cv2, 'TrackerKCF_create'):
+        tracker_constructors.append(('KCF', cv2.TrackerKCF_create))
+    if hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerKCF_create'):
+        tracker_constructors.append(('KCF_legacy', cv2.legacy.TrackerKCF_create))
+    # MOSSE
+    if hasattr(cv2, 'TrackerMOSSE_create'):
+        tracker_constructors.append(('MOSSE', cv2.TrackerMOSSE_create))
+    if hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerMOSSE_create'):
+        tracker_constructors.append(('MOSSE_legacy', cv2.legacy.TrackerMOSSE_create))
+    # MIL
+    if hasattr(cv2, 'TrackerMIL_create'):
+        tracker_constructors.append(('MIL', cv2.TrackerMIL_create))
+    if hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerMIL_create'):
+        tracker_constructors.append(('MIL_legacy', cv2.legacy.TrackerMIL_create))
+    # MEDIANFLOW
+    if hasattr(cv2, 'TrackerMedianFlow_create'):
+        tracker_constructors.append(('MEDIANFLOW', cv2.TrackerMedianFlow_create))
+    if hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerMedianFlow_create'):
+        tracker_constructors.append(('MEDIANFLOW_legacy', cv2.legacy.TrackerMedianFlow_create))
 
-    # Intentar CSRT en módulo legacy
-    try:
-        return cv2.legacy.TrackerCSRT_create()
-    except Exception:
-        pass
+    for name, constructor in tracker_constructors:
+        try:
+            tracker = constructor()
+            logging.info(f"Usando tracker {name}")
+            return tracker
+        except Exception:
+            continue
 
-    # Intentar KCF
-    try:
-        return cv2.TrackerKCF_create()
-    except Exception:
-        pass
-
-    # Intentar KCF en módulo legacy
-    try:
-        return cv2.legacy.TrackerKCF_create()
-    except Exception:
-        pass
-
-    # Fallback: dummy tracker
-    logging.warning("Trackers de OpenCV no disponibles; usando DummyTracker (sólo IoU).")
+    # Fallback dummy
+    logging.warning("No se encontró ningún tracker de OpenCV, usando tracker dummy (sin seguimiento)")
     class DummyTracker:
-        def init(self, frame, bbox): pass
-        def update(self, frame): return False, None
-
+        def init(self, frame, bbox):
+            pass
+        def update(self, frame):
+            # siempre falla, lo que provocará re-detección
+            return False, None
     return DummyTracker()
+
+
 class PlateInstance:
     def __init__(self, initial_bbox, frame, model_ocr, ocr_names):
         self.id           = str(uuid.uuid4())
@@ -81,12 +96,12 @@ class PlateInstance:
         # estado de OCR
         self.ocr_status   = 'pending'    # pending / completed / failed
         self.ocr_text     = ''
-        # instancia de tu OCR
+        # instancia de OCR personalizada
         self.ocr_processor = OCRProcessor(model_ocr, ocr_names)
 
     def update_tracker(self, frame):
         ok, new_bbox = self.tracker.update(frame)
-        if ok:
+        if ok and new_bbox is not None:
             self.bbox      = tuple(map(int, new_bbox))
             self.last_seen = time.time()
             self.missed    = 0
@@ -101,58 +116,62 @@ class PlateInstance:
         x, y, w, h = self.bbox
         crop = hd_frame[y:y+h, x:x+w]
         try:
-            res = self.ocr_processor.process(crop)   # asume un método .process()
+            res = self.ocr_processor.process(crop)
             text = res.get("ocr_text", "").strip()
-            if text:
+            # sólo marcar completed si tenemos al menos 5 caracteres
+            if len(text) >= 5:
                 self.ocr_text   = text
                 self.ocr_status = 'completed'
             else:
-                self.ocr_status = 'failed'
+                # lectura demasiado corta: ignorar y seguir en pending
+                return
         except Exception:
             self.ocr_status = 'failed'
 
 class PlateTrackerManager:
     def __init__(self, model_ocr, ocr_names,
                  iou_thresh=0.3, max_missed=5, detect_every=5):
-        self.instances   = {}   # id -> PlateInstance
-        self.iou_thresh  = iou_thresh
-        self.max_missed  = max_missed
-        self.detect_every= detect_every
-        self.frame_count = 0
-        self.model_ocr   = model_ocr
-        self.ocr_names   = ocr_names
+        self.instances    = {}   # id -> PlateInstance
+        self.iou_thresh   = iou_thresh
+        self.max_missed   = max_missed
+        self.detect_every = detect_every
+        self.frame_count  = 0
+        self.model_ocr    = model_ocr
+        self.ocr_names    = ocr_names
 
     def update(self, hd_frame, detections):
         """
-        - hd_frame: frame original en alta resolución
-        - detections: lista de bboxes [(x,y,w,h),...] detectadas por YOLO
-        Devuelve el dict de instancias activas.
+        Actualiza cada instancia de placa:
+         - Actualiza trackeurs
+         - Re-detección cada N frames y asociación por IoU
+         - Limpieza de instancias excesivamente perdidas
         """
         self.frame_count += 1
 
-        # 1) Primero, actualizar todos los trackers
+        # 1) Actualizar trackers existentes
         for pid, inst in list(self.instances.items()):
             inst.update_tracker(hd_frame)
-            # si se perdió demasiado, eliminar
+            # Eliminar si se perdió demasiado
             if inst.missed > self.max_missed:
                 del self.instances[pid]
 
-        # 2) Asociar detecciones nuevas _sólo_ cada detect_every frames
+        # 2) Asociar detecciones nuevas cada detect_every frames
         if self.frame_count % self.detect_every == 0:
             for det in detections:
-                best_id, best_iou = None, 0
+                best_id, best_iou = None, 0.0
                 for pid, inst in self.instances.items():
                     iou = compute_iou(inst.bbox, det)
                     if iou > best_iou:
                         best_iou, best_id = iou, pid
                 if best_iou >= self.iou_thresh:
-                    # re–inicializar tracker con la caja nueva
-                    self.instances[best_id].tracker.init(hd_frame, det)
-                    self.instances[best_id].bbox = det
-                    self.instances[best_id].missed = 0
+                    # Re-inicializar tracker con nueva bbox
+                    inst = self.instances[best_id]
+                    inst.tracker.init(hd_frame, det)
+                    inst.bbox   = det
+                    inst.missed = 0
                 else:
-                    # nueva placa
-                    inst = PlateInstance(det, hd_frame, self.model_ocr, self.ocr_names)
-                    self.instances[inst.id] = inst
+                    # Nueva placa detectada
+                    new_inst = PlateInstance(det, hd_frame, self.model_ocr, self.ocr_names)
+                    self.instances[new_inst.id] = new_inst
 
         return self.instances
