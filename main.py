@@ -148,6 +148,10 @@ def main():
     pending_jobs = set()
     invalid_frame_count = 0  # contador de frames inválidos consecutivos
 
+    # Ruta de debug para snapshots
+    debug_dir = "/home/customware/PortonAI/proyecto_portonAI/debug"
+    os.makedirs(debug_dir, exist_ok=True)
+
     # Función para snapshot y OCR avanzado en background
     def schedule_snapshot_and_ocr(plate_id, inst):
         try:
@@ -167,19 +171,37 @@ def main():
             ox2, oy2 = int(x2 * sx), int(y2 * sy)
             roi = hd_snap[oy1:oy2, ox1:ox2]
 
-            # 3) OCR con OpenAI
-            result = ocr_processor.process_plate_image(roi, use_openai=True)
-            text = result.get("ocr_text", "").strip()
-            conf = result.get("confidence", 0.0)
+            # 3) Guardar snapshot en disco para debug
+            timestamp_ms = int(time.time() * 1000)
+            filename = f"snapshot_{plate_id}_{timestamp_ms}.jpg"
+            cv2.imwrite(os.path.join(debug_dir, filename), roi)
 
-            # 4) Validar y actualizar instancia
+            # 4) Intentar OCR multiescala en el ROI
+            multiscale = ocr_processor.process_multiscale(roi)
+            best = apply_consensus_voting(multiscale, min_length=5)
+            if best is not None:
+                candidate_text = best.get("ocr_text", "").strip()
+                candidate_conf = best.get("average_conf", 0.0)
+            else:
+                candidate_text = ""
+                candidate_conf = 0.0
+
+            # 5) Si multiescala no arroja valor válido, fallback a OpenAI
+            if not (candidate_text and is_valid_plate(candidate_text)):
+                result = ocr_processor.process_plate_image(roi, use_openai=True)
+                text = result.get("ocr_text", "").strip()
+                conf = result.get("confidence", 0.0)
+            else:
+                text = candidate_text
+                conf = candidate_conf
+
+            # 6) Validar y actualizar instancia sólo si es válido
             if is_valid_plate(text):
                 inst.ocr_text = text
                 inst.ocr_status = 'completed'
                 inst.ocr_conf = conf
-                # Trazar en el archivo de logs la placa reconocida
                 logging.info(f"Placa detectada y almacenada: {text}")
-                # 5) Envío de resultados
+                # 7) Envío de resultados (una sola vez por placa)
                 executor.submit(send_plate_async, roi, hd_snap, text, "", inst.bbox)
                 send_backend(text, roi)
 
@@ -199,7 +221,6 @@ def main():
             if not ret or not is_frame_valid(frame_ld):
                 invalid_frame_count += 1
                 logging.warning("Frame inválido detectado, reintentando...")
-                # si hay demasiados consecutivos, reconectamos el stream
                 if invalid_frame_count >= 5:
                     logging.info("Reconectando stream tras 5 frames inválidos...")
                     stream_LD.release()
@@ -208,7 +229,6 @@ def main():
                     invalid_frame_count = 0
                 time.sleep(0.5)
                 continue
-            # restablecer contador al recibir un frame válido
             invalid_frame_count = 0
 
             # 2.2 Preprocesamiento para detección
@@ -217,7 +237,6 @@ def main():
 
             # 2.3 (Opcional) Modo día/noche
             avg_brightness = np.mean(frame_ld)
-            # (puedes conservar tu lógica de cambio de modo aquí)
 
             # 2.4 Detección de placas en frame reducido
             all_detections = []
@@ -226,20 +245,13 @@ def main():
                 conf = float(box.conf[0]) * 100
                 if conf < CONFIANZA_PATENTE:
                     continue
-
-                # -- Aquí pasamos TODO a (x1, y1, x2, y2) --
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-                # escalar a HD
-                xh  = int(x1 * scale_x)
-                yh  = int(y1 * scale_y)
+                xh = int(x1 * scale_x)
+                yh = int(y1 * scale_y)
                 x2h = int(x2 * scale_x)
                 y2h = int(y2 * scale_y)
-
-                # debug: dibujar todas las detecciones en HD
                 if DEBUG_MODE:
                     cv2.rectangle(frame_ld, (xh, yh), (x2h, y2h), (0,255,0), 2)
-
-                # Tracking para todas las cajas en formato (x1, y1, x2, y2)
                 all_detections.append((xh, yh, x2h, y2h))
 
             # 2.5 Actualizar tracking híbrido
@@ -290,7 +302,6 @@ def main():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
             if DEBUG_MODE:
-                # Mostrar FPS
                 now = time.time()
                 fps = 1.0 / (now - prev_time) if now > prev_time else 0.0
                 prev_time = now
