@@ -33,7 +33,7 @@ logging.getLogger("yolov8").setLevel(logging.ERROR)
 # Modo online / offline
 # ---------------------------------------------------------------------
 # True = leer la cámara en vivo (RTSP); False = usar un vídeo de prueba
-ONLINE_MODE = False
+ONLINE_MODE = True
 
 # ---------------------------------------------------------------------
 # CONSTANTES Y PARÁMETROS BÁSICOS

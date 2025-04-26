@@ -97,7 +97,12 @@ def main():
     # 1.2b Tracking híbrido y snapshot
     plate_manager = PlateTrackerManager(
         model_ocr, manager.get_ocr_names(),
-        iou_thresh=0.3, max_missed=5, detect_every=5
+        iou_thresh=0.5,  # Aumentado de 0.3 a 0.5 para ser más estricto en la asociación
+        max_missed=7,    # Aumentado de 5 a 7 para persistir mejor los trackers existentes
+        detect_every=5,
+        min_detection_confidence=CONFIANZA_PATENTE * 0.01,  # Convertir porcentaje a decimal
+        exclude_footer=True,  # Activar exclusión de footer
+        footer_ratio=0.85     # 85% de la altura para comenzar la zona de exclusión
     )
     snapshot_manager = SnapshotManager()
 
@@ -169,14 +174,36 @@ def main():
             # 2) Refinar detección en HD
             hd_resized, sx, sy = resize_for_inference(hd_snap, max_dim=640)
             refined = model_plate.predict(hd_resized, device='cuda:0', verbose=False)
-            box = next((b for b in refined[0].boxes
-                        if float(b.conf[0]) * 100 >= CONFIANZA_PATENTE), None)
-            if not box:
+            
+            # Usar la caja con mejor confianza que supere el umbral
+            boxes = [b for b in refined[0].boxes if float(b.conf[0]) * 100 >= CONFIANZA_PATENTE]
+            if not boxes:
+                logging.debug(f"No se encontraron placas válidas en el snapshot de {plate_id}")
                 return
+                
+            # Ordenar por confianza descendente
+            boxes.sort(key=lambda b: float(b.conf[0]), reverse=True)
+            box = boxes[0]  # Tomar la más confiable
+            
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             ox1, oy1 = int(x1 * sx), int(y1 * sy)
             ox2, oy2 = int(x2 * sx), int(y2 * sy)
+            
+            # Verificar que las coordenadas son válidas
+            h_snap, w_snap = hd_snap.shape[:2]
+            ox1 = max(0, min(ox1, w_snap-1))
+            oy1 = max(0, min(oy1, h_snap-1))
+            ox2 = max(0, min(ox2, w_snap))
+            oy2 = max(0, min(oy2, h_snap))
+            
+            if ox2 <= ox1 or oy2 <= oy1:
+                logging.warning(f"ROI inválido en snapshot para placa {plate_id}: {(ox1,oy1,ox2,oy2)}")
+                return
+                
             roi = hd_snap[oy1:oy2, ox1:ox2]
+            if roi.size == 0:
+                logging.warning(f"ROI vacío para placa {plate_id}")
+                return
 
             # 3) Intentar OCR multiescala en el ROI
             multiscale = ocr_processor.process_multiscale(roi)
@@ -205,7 +232,7 @@ def main():
                 logging.info(f"Placa detectada y almacenada: {text}")
                 # 6) Guardar snapshot en disco para debug
                 timestamp_ms = int(time.time() * 1000)
-                filename = f"snapshot_{plate_id}_{timestamp_ms}.jpg"
+                filename = f"snapshot_{plate_id}_{timestamp_ms}_{text}.jpg"
                 cv2.imwrite(os.path.join(debug_dir, filename), roi)
                 # 7) Envío de resultados (una sola vez por placa)
                 executor.submit(send_plate_async, roi, hd_snap, text, "", inst.bbox)
@@ -247,32 +274,67 @@ def main():
             # 2.4 Detección de placas en frame reducido
             all_detections = []
             results = model_plate.predict(inference_frame, device='cuda:0', verbose=False)
+            
+            # Filtrar las detecciones por confianza y ordenar de mayor a menor confianza
+            filtered_boxes = []
             for box in results[0].boxes:
                 conf = float(box.conf[0]) * 100
-                if conf < CONFIANZA_PATENTE:
-                    continue
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                xh = int(x1 * scale_x)
-                yh = int(y1 * scale_y)
-                x2h = int(x2 * scale_x)
-                y2h = int(y2 * scale_y)
-                if DEBUG_MODE:
-                    cv2.rectangle(frame_ld, (xh, yh), (x2h, y2h), (0,255,0), 2)
-                all_detections.append((xh, yh, x2h, y2h))
+                if conf >= CONFIANZA_PATENTE:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    xh = int(x1 * scale_x)
+                    yh = int(y1 * scale_y)
+                    x2h = int(x2 * scale_x)
+                    y2h = int(y2 * scale_y)
+                    filtered_boxes.append((xh, yh, x2h, y2h, conf))
+            
+            # Ordenar por confianza descendente
+            filtered_boxes.sort(key=lambda x: x[4], reverse=True)
+            
+            # Extraer solo las cajas sin la confianza para el tracker
+            all_detections = [(x[0], x[1], x[2], x[3]) for x in filtered_boxes]
+            
+            if DEBUG_MODE and all_detections:
+                # Mostrar todas las detecciones antes de filtrar
+                for i, (xh, yh, x2h, y2h) in enumerate(all_detections):
+                    # Color rojo para las primeras 5 detecciones (más confiables)
+                    color = (0, 0, 255) if i < 5 else (0, 255, 0)
+                    cv2.rectangle(frame_ld, (xh, yh), (x2h, y2h), color, 2)
+                    # Mostrar número de detección
+                    cv2.putText(frame_ld, f"{i+1}", (xh, yh-5), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
-            # 2.5 Actualizar tracking híbrido
+            # 2.5 Actualizar tracking híbrido con las detecciones ordenadas por confianza
             active_plates = plate_manager.update(frame_ld, all_detections)
+            
+            # Registrar estadísticas de tracking cuando hay placas activas
+            if active_plates:
+                logging.debug(f"Placas activas: {len(active_plates)} | IDs: {list(active_plates.keys())[:3]}...")
 
-            # 2.6 DIBUJAR TODAS LAS CAJAS Y ETIQUETAS
+            # 2.6 DIBUJAR TODAS LAS CAJAS Y ETIQUETAS Y ZONA DE EXCLUSIÓN
             vis = frame_ld.copy()
+            
+            # Dibujar la zona de exclusión si estamos en modo debug
+            if DEBUG_MODE:
+                h, w = frame_ld.shape[:2]
+                footer_y = int(h * plate_manager.footer_ratio)
+                cv2.line(vis, (0, footer_y), (w, footer_y), (0, 0, 255), 1)
+                cv2.putText(vis, "ZONA DE EXCLUSION", (10, footer_y+20), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            
             for pid, inst in active_plates.items():
                 x1, y1, x2, y2 = inst.bbox
+                
+                # Validar que las coordenadas sean correctas (x2>x1, y2>y1)
+                if x2 <= x1 or y2 <= y1:
+                    logging.debug(f"Ignorando caja inválida para placa {pid}: {(x1,y1,x2,y2)}")
+                    continue
+                    
                 if inst.ocr_status == 'completed':
                     color = (0,255,0)
                     label = inst.ocr_text
                 else:
                     color = (0,0,255)
-                    label = pid[:4]
+                    label = f"{pid[:4]}"
                 cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
                 cv2.putText(vis, label, (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
@@ -296,6 +358,12 @@ def main():
                 if inst.ocr_status != 'pending':
                     continue
                 x1, y1, x2, y2 = inst.bbox
+                
+                # Validación adicional de las coordenadas
+                if x2 <= x1 or y2 <= y1:
+                    logging.warning(f"Coordenadas de bbox inválidas para OCR en placa {pid}: {(x1,y1,x2,y2)}")
+                    continue
+                    
                 w, h = x2 - x1, y2 - y1
                 if w * h < UMBRAL_SNAPSHOT_AREA:
                     continue
@@ -306,7 +374,7 @@ def main():
                 y2 = max(0, min(y2, h_ld))
                 if x2 <= x1 or y2 <= y1:
                     logging.warning(f"ROI inválido o fuera de rango para placa {pid}: {(x1,y1,x2,y2)}")
-                    continue   # o return en snapshot
+                    continue
                 crop = frame_ld[y1:y2, x1:x2]
                 try:
                     multiscale = ocr_processor.process_multiscale(crop)
@@ -329,6 +397,11 @@ def main():
                 if inst.ocr_status != 'pending' or pid in pending_jobs:
                     continue
                 x1, y1, x2, y2 = inst.bbox
+                
+                # Validación adicional
+                if x2 <= x1 or y2 <= y1:
+                    continue
+                    
                 w, h = x2 - x1, y2 - y1
                 if w * h >= UMBRAL_SNAPSHOT_AREA:
                     pending_jobs.add(pid)
