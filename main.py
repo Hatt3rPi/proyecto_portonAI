@@ -119,23 +119,28 @@ def main():
     if not ret or not is_frame_valid(frame_ld):
         logging.error("No se pudo leer el primer frame del stream")
         sys.exit(1)
+    # Si estamos en modo offline usaremos este mismo frame como “snapshot HD”
     stream_h, stream_w = frame_ld.shape[:2]
-    logging.info(f"Dimensiones del stream (LD): {stream_w}x{stream_h}")
-
-    # 1.5 Snapshot inicial
-    snapshot_id = "initial"
-    future = snapshot_manager.request_update_future(snapshot_id)
-    try:
-        recv_id, initial_snapshot = future.result(timeout=5)
-        if initial_snapshot is None:
-            raise Exception("Snapshot inicial no disponible")
-        if recv_id != snapshot_id:
-            logging.warning("Snapshot inicial desincronizado")
-    except Exception as e:
-        logging.error(f"Error obteniendo snapshot inicial: {e}")
-        sys.exit(1)
-    snap_h, snap_w = initial_snapshot.shape[:2]
-    logging.info(f"Dimensiones del snapshot (HD): {snap_w}x{snap_h}")
+    is_offline = not ONLINE_MODE
+    if is_offline:
+        initial_snapshot = frame_ld.copy()
+        snap_h, snap_w = initial_snapshot.shape[:2]
+        logging.info(f"[OFFLINE] Dimensiones snapshot (HD): {snap_w}x{snap_h}")
+    else:
+        # 1.5 Snapshot inicial
+        snapshot_id = "initial"
+        future = snapshot_manager.request_update_future(snapshot_id)
+        try:
+            recv_id, initial_snapshot = future.result(timeout=5)
+            if initial_snapshot is None:
+                raise Exception("Snapshot inicial no disponible")
+            if recv_id != snapshot_id:
+                logging.warning("Snapshot inicial desincronizado")
+        except Exception as e:
+            logging.error(f"Error obteniendo snapshot inicial: {e}")
+            sys.exit(1)
+        snap_h, snap_w = initial_snapshot.shape[:2]
+        logging.info(f"Dimensiones del snapshot (HD): {snap_w}x{snap_h}")
 
     # 1.6 Preparación de UI y auxiliares
     if DEBUG_MODE:
@@ -156,7 +161,11 @@ def main():
     def schedule_snapshot_and_ocr(plate_id, inst):
         try:
             # 1) Obtener snapshot HD
-            _, hd_snap = snapshot_manager.request_update_future(plate_id).result(timeout=5)
+            if is_offline:
+                # Usamos siempre el último frame HD leido
+                hd_snap = frame_ld.copy()
+            else:
+                _, hd_snap = snapshot_manager.request_update_future(plate_id).result(timeout=5)
 
             # 2) Refinar detección en HD
             hd_resized, sx, sy = resize_for_inference(hd_snap, max_dim=640)
