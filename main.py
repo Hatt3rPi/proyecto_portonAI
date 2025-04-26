@@ -262,9 +262,9 @@ def main():
                                 inst.ocr_stream = best
                                 inst.ocr_text   = text
                                 inst.ocr_status = 'completed'
-                                logging.info(f"OCR stream válido placa {pid}: {text}")
+                                logging.info(f"OCR stream válido placa {pid}: '{text}'")
                             else:
-                                logging.debug(f"OCR stream inválido placa {pid}: {text}")
+                                logging.debug(f"OCR stream inválido placa {pid}: '{text}'")
                         except Exception as e:
                             logging.warning(f"OCR stream error placa {pid}: {e}")
 
@@ -272,7 +272,7 @@ def main():
             for pid, inst in active_plates.items():
                 x1, y1, x2, y2 = inst.bbox
                 w, h = x2 - x1, y2 - y1
-                logging.debug(f"Placa_id: {pid}, Área: {w*h}, Umbral: {UMBRAL_SNAPSHOT_AREA}, Estado_OCR:{inst.ocr_status}")
+                logging.debug(f"Placa_id: {pid}, Área: {w*h}, Umbral: {UMBRAL_SNAPSHOT_AREA}, Estado_OCR: {inst.ocr_status}, Lectura: '{text}'")
                 if (inst.ocr_status == 'pending'
                         and w * h >= UMBRAL_SNAPSHOT_AREA
                         and pid not in pending_jobs):
