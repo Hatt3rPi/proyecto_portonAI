@@ -102,7 +102,7 @@ def main():
     snapshot_manager = SnapshotManager()
 
     # 1.3 Apertura de stream
-    source = URL_HD if ONLINE_MODE else "scripts/monitoreo_patentes/video.mp4"
+    source = URL_HD if ONLINE_MODE else "proyecto_portonAI/debug/test_noche.mp4"
     stream_LD = open_stream_with_suppressed_stderr(source)
     if not stream_LD.isOpened():
         logging.error("No se pudo abrir el stream, reintentando en 2s...")
@@ -119,7 +119,7 @@ def main():
     if not ret or not is_frame_valid(frame_ld):
         logging.error("No se pudo leer el primer frame del stream")
         sys.exit(1)
-    # Si estamos en modo offline usaremos este mismo frame como “snapshot HD”
+
     stream_h, stream_w = frame_ld.shape[:2]
     is_offline = not ONLINE_MODE
     if is_offline:
@@ -162,7 +162,6 @@ def main():
         try:
             # 1) Obtener snapshot HD
             if is_offline:
-                # Usamos siempre el último frame HD leido
                 hd_snap = frame_ld.copy()
             else:
                 _, hd_snap = snapshot_manager.request_update_future(plate_id).result(timeout=5)
@@ -170,7 +169,6 @@ def main():
             # 2) Refinar detección en HD
             hd_resized, sx, sy = resize_for_inference(hd_snap, max_dim=640)
             refined = model_plate.predict(hd_resized, device='cuda:0', verbose=False)
-            # Tomar la primera caja válida
             box = next((b for b in refined[0].boxes
                         if float(b.conf[0]) * 100 >= CONFIANZA_PATENTE), None)
             if not box:
@@ -180,12 +178,7 @@ def main():
             ox2, oy2 = int(x2 * sx), int(y2 * sy)
             roi = hd_snap[oy1:oy2, ox1:ox2]
 
-            # 3) Guardar snapshot en disco para debug
-            timestamp_ms = int(time.time() * 1000)
-            filename = f"snapshot_{plate_id}_{timestamp_ms}.jpg"
-            cv2.imwrite(os.path.join(debug_dir, filename), roi)
-
-            # 4) Intentar OCR multiescala en el ROI
+            # 3) Intentar OCR multiescala en el ROI
             multiscale = ocr_processor.process_multiscale(roi)
             best = apply_consensus_voting(multiscale, min_length=5)
             if best is not None:
@@ -195,7 +188,7 @@ def main():
                 candidate_text = ""
                 candidate_conf = 0.0
 
-            # 5) Si multiescala no arroja valor válido, fallback a OpenAI
+            # 4) Si multiescala no arroja valor válido, fallback a OpenAI
             if not (candidate_text and is_valid_plate(candidate_text)):
                 result = ocr_processor.process_plate_image(roi, use_openai=True)
                 text = result.get("ocr_text", "").strip()
@@ -204,12 +197,16 @@ def main():
                 text = candidate_text
                 conf = candidate_conf
 
-            # 6) Validar y actualizar instancia sólo si es válido
+            # 5) Validar y actualizar instancia sólo si es válido
             if is_valid_plate(text):
                 inst.ocr_text = text
                 inst.ocr_status = 'completed'
                 inst.ocr_conf = conf
                 logging.info(f"Placa detectada y almacenada: {text}")
+                # 6) Guardar snapshot en disco para debug
+                timestamp_ms = int(time.time() * 1000)
+                filename = f"snapshot_{plate_id}_{timestamp_ms}.jpg"
+                cv2.imwrite(os.path.join(debug_dir, filename), roi)
                 # 7) Envío de resultados (una sola vez por placa)
                 executor.submit(send_plate_async, roi, hd_snap, text, "", inst.bbox)
                 send_backend(text, roi)
@@ -266,50 +263,21 @@ def main():
             # 2.5 Actualizar tracking híbrido
             active_plates = plate_manager.update(frame_ld, all_detections)
 
-            # 2.6 OCR en streaming (ligero)
-            for pid, inst in active_plates.items():
-                if inst.ocr_status == 'pending':
-                    x1, y1, x2, y2 = inst.bbox
-                    w, h = x2 - x1, y2 - y1
-                    if w * h >= UMBRAL_SNAPSHOT_AREA:
-                        crop = frame_ld[y1:y2, x1:x2]
-                        try:
-                            multiscale = ocr_processor.process_multiscale(crop)
-                            best = apply_consensus_voting(multiscale, min_length=5)
-                            if best is None and multiscale:
-                                best = max(multiscale, key=lambda r: r["confidence"])
-                            text = (best or {}).get("ocr_text","").strip()
-                            if text and is_valid_plate(text):
-                                inst.ocr_stream = best
-                                inst.ocr_text   = text
-                                inst.ocr_status = 'completed'
-                                logging.info(f"OCR stream válido placa {pid}: '{text}'")
-                            else:
-                                logging.debug(f"OCR stream inválido placa {pid}: '{text}'")
-                        except Exception as e:
-                            logging.warning(f"OCR stream error placa {pid}: {e}")
-
-            # 2.7 Programar snapshot+OCR asíncrono para pendientes
-            for pid, inst in active_plates.items():
-                x1, y1, x2, y2 = inst.bbox
-                w, h = x2 - x1, y2 - y1
-                logging.debug(f"Placa_id: {pid}, Área: {w*h}, Umbral: {UMBRAL_SNAPSHOT_AREA}, Estado_OCR: {inst.ocr_status}, Lectura: '{text}'")
-                if (inst.ocr_status == 'pending'
-                        and w * h >= UMBRAL_SNAPSHOT_AREA
-                        and pid not in pending_jobs):
-                    pending_jobs.add(pid)
-                    executor.submit(schedule_snapshot_and_ocr, pid, inst)
-
-            # 2.8 Visualización y FPS
+            # 2.6 DIBUJAR TODAS LAS CAJAS Y ETIQUETAS
             vis = frame_ld.copy()
             for pid, inst in active_plates.items():
                 x1, y1, x2, y2 = inst.bbox
-                color = (0,255,0) if inst.ocr_status == 'completed' else (0,0,255)
-                label = inst.ocr_text if inst.ocr_status == 'completed' and inst.ocr_text else pid[:4]
+                if inst.ocr_status == 'completed':
+                    color = (0,255,0)
+                    label = inst.ocr_text
+                else:
+                    color = (0,0,255)
+                    label = pid[:4]
                 cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
                 cv2.putText(vis, label, (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
+            # Mostrar ventana y FPS si estamos en DEBUG
             if DEBUG_MODE:
                 now = time.time()
                 fps = 1.0 / (now - prev_time) if now > prev_time else 0.0
@@ -322,6 +290,49 @@ def main():
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
                     break
+
+            # 2.7 OCR EN STREAMING SÓLO PARA PENDIENTES
+            for pid, inst in active_plates.items():
+                if inst.ocr_status != 'pending':
+                    continue
+                x1, y1, x2, y2 = inst.bbox
+                w, h = x2 - x1, y2 - y1
+                if w * h < UMBRAL_SNAPSHOT_AREA:
+                    continue
+                h_ld, w_ld = frame_ld.shape[:2]
+                x1 = max(0, min(x1, w_ld-1))
+                y1 = max(0, min(y1, h_ld-1))
+                x2 = max(0, min(x2, w_ld))
+                y2 = max(0, min(y2, h_ld))
+                if x2 <= x1 or y2 <= y1:
+                    logging.warning(f"ROI inválido o fuera de rango para placa {pid}: {(x1,y1,x2,y2)}")
+                    continue   # o return en snapshot
+                crop = frame_ld[y1:y2, x1:x2]
+                try:
+                    multiscale = ocr_processor.process_multiscale(crop)
+                    best = apply_consensus_voting(multiscale, min_length=5)
+                    if best is None and multiscale:
+                        best = max(multiscale, key=lambda r: r["confidence"])
+                    text = (best or {}).get("ocr_text","").strip()
+                    if text and is_valid_plate(text):
+                        inst.ocr_stream = best
+                        inst.ocr_text   = text
+                        inst.ocr_status = 'completed'
+                        logging.info(f"OCR stream válido placa {pid}: '{text}'")
+                    else:
+                        logging.debug(f"OCR stream inválido placa {pid}: '{text}'")
+                except Exception as e:
+                    logging.warning(f"OCR stream error placa {pid}: {e}")
+
+            # 2.8 PROGRAMAR SNAPSHOT+OCR ASÍNCRONO SÓLO PARA PENDIENTES
+            for pid, inst in active_plates.items():
+                if inst.ocr_status != 'pending' or pid in pending_jobs:
+                    continue
+                x1, y1, x2, y2 = inst.bbox
+                w, h = x2 - x1, y2 - y1
+                if w * h >= UMBRAL_SNAPSHOT_AREA:
+                    pending_jobs.add(pid)
+                    executor.submit(schedule_snapshot_and_ocr, pid, inst)
 
         except KeyboardInterrupt:
             break
