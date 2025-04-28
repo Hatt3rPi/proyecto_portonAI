@@ -67,6 +67,35 @@ logging.getLogger("yolov8").setLevel(logging.ERROR)
 # Executor global para snapshots y OCR en background
 executor = ThreadPoolExecutor(max_workers=4)
 
+# --- Configuración de OCR Stream basado en zona de detección (columna imaginaria) ---
+OCR_STREAM_ZONE = {
+    "start_x_pct": 0.07,   # Desde el 7% del ancho
+    "end_x_pct": 0.35,     # Hasta el 35% del ancho
+    "start_y_pct": 0.10,   # Desde el 10% del alto
+    "end_y_pct": 0.85      # Hasta el 85% del alto (o zona de exclusión)
+}
+def is_in_ocr_stream_zone(bbox, frame_shape, zone_def):
+    """
+    Verifica si un bbox está completamente dentro de la zona de OCR stream.
+
+    Args:
+        bbox: (x1, y1, x2, y2) de la detección
+        frame_shape: (height, width) del frame
+        zone_def: Diccionario con porcentajes de la zona (start_x_pct, end_x_pct, start_y_pct, end_y_pct)
+
+    Returns:
+        True si el bbox está completamente dentro de la zona, False en otro caso.
+    """
+    x1, y1, x2, y2 = bbox
+    h, w = frame_shape[:2]
+
+    start_x = zone_def["start_x_pct"] * w
+    end_x   = zone_def["end_x_pct"] * w
+    start_y = zone_def["start_y_pct"] * h
+    end_y   = zone_def["end_y_pct"] * h
+
+    return (x1 >= start_x and x2 <= end_x and
+            y1 >= start_y and y2 <= end_y)
 
 def main(video_path=None):
     """
@@ -354,6 +383,29 @@ def main(video_path=None):
                 cv2.line(vis, (0, footer_y), (w, footer_y), (0, 0, 255), 1)
                 cv2.putText(vis, "ZONA DE EXCLUSION", (10, footer_y+20), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                start_x = int(OCR_STREAM_ZONE["start_x_pct"] * w)
+                end_x   = int(OCR_STREAM_ZONE["end_x_pct"] * w)
+                start_y = int(OCR_STREAM_ZONE["start_y_pct"] * h)
+                end_y   = int(OCR_STREAM_ZONE["end_y_pct"] * h)
+
+                # Línea izquierda
+                start_x = int(OCR_STREAM_ZONE["start_x_pct"] * w)
+                end_x   = int(OCR_STREAM_ZONE["end_x_pct"] * w)
+                start_y = int(OCR_STREAM_ZONE["start_y_pct"] * h)
+                end_y   = int(OCR_STREAM_ZONE["end_y_pct"] * h)
+
+                # Línea izquierda
+                cv2.line(vis, (start_x, start_y), (start_x, end_y), (255, 255, 0), 1)
+                # Línea derecha
+                cv2.line(vis, (end_x, start_y), (end_x, end_y), (255, 255, 0), 1)
+                # Línea superior
+                cv2.line(vis, (start_x, start_y), (end_x, start_y), (255, 255, 0), 1)
+                # Línea inferior
+                cv2.line(vis, (start_x, end_y), (end_x, end_y), (255, 255, 0), 1)
+
+                # Texto indicador
+                cv2.putText(vis, "Zona OCR Stream", (start_x + 5, start_y - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
             for pid, inst in active_plates.items():
                 x1, y1, x2, y2 = inst.bbox
@@ -365,11 +417,16 @@ def main(video_path=None):
                     color = (0,255,0)
                     label = inst.ocr_text
                 else:
-                    color = (0,0,255)
-                    label = f"{pid[:4]}"
+                    if is_in_ocr_stream_zone(inst.bbox, frame_ld.shape, OCR_STREAM_ZONE):
+                        color = (255, 255, 0)
+                    else:
+                        color = (0,0,255)
+                    label = pid[:4]  # <<< Esto agrega un label de backup (ej: primeros 4 caracteres del ID)
+
                 cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
                 cv2.putText(vis, label, (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
 
             # Mostrar FPS y ventana en modo DEBUG
             if DEBUG_MODE:
@@ -389,13 +446,11 @@ def main(video_path=None):
             for pid, inst in active_plates.items():
                 if inst.ocr_status != 'pending':
                     continue
-                x1, y1, x2, y2 = inst.bbox
-                if x2 <= x1 or y2 <= y1:
-                    logging.warning(f"Coordenadas inválidas para OCR en placa {pid}: {(x1,y1,x2,y2)}")
+                
+                # Validar que bbox esté completamente dentro de la zona de OCR Stream
+                if not is_in_ocr_stream_zone(inst.bbox, frame_ld.shape, OCR_STREAM_ZONE):
                     continue
-                w, h = x2 - x1, y2 - y1
-                if w * h < UMBRAL_SNAPSHOT_AREA:
-                    continue
+
                 h_ld, w_ld = frame_ld.shape[:2]
                 x1 = max(0, min(x1, w_ld-1))
                 y1 = max(0, min(y1, h_ld-1))
