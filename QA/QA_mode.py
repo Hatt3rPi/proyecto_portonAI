@@ -126,8 +126,8 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
                         roi_area = int(part.replace("Área:", "").replace("px²", "").strip())
                     if "X inicial:" in part:
                         roi_x = int(part.replace("X inicial:", "").strip())
-                    if "Tiempo:" in part:
-                        process_time = int(part.replace("Tiempo:", "").replace("ms", "").strip())
+                    if "Tiempo detección a OCR:" in part:
+                        process_time = int(part.replace("Tiempo detección a OCR:", "").replace("ms", "").strip())
 
         # Comparar resultados
         success = [p for p in expected_plates if p in detected_plates]
@@ -142,7 +142,7 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
         if roi_x is not None:
             roi_x = f"{roi_x:>4}"  # 4 caracteres, alineado a la derecha
         else:
-            roi_x = "N/A"
+            roi_x = " N/A"
             
         # Formatear el tiempo de procesamiento
         if process_time is not None:
@@ -160,9 +160,9 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
 
         detected_str = colorear_patente(detected_plates[0], expected_plates[0]) if detected_plates else "".ljust(6)
 
-        # Mostrar resultado con tiempo de procesamiento
-        print(" " * 150, end="\r")
-        print(f"[QA] {fname} | Esperada: {expected_plates} | Detectadas: {detected_str} | {simbolo} | Área: {roi_area or ' N/A '} px² | X: {roi_x or ' N/A'} | Tiempo: {process_time_str}")
+       # Mostrar resultado con tiempo de procesamiento
+        print(" " * 200, end="\r")  # 💥 Limpiar línea anterior
+        print(f"[QA] {fname} | Esperada: {', '.join(expected_plates)} | Detectadas: {detected_str} | {simbolo} | Área: {roi_area} px² | X: {roi_x} | Tiempo: {process_time_str}")
         sys.stdout.flush()
 
         results[fname] = {
@@ -197,16 +197,20 @@ total_expected = sum(len(d["expected"]) for d in results.values())
 total_detected = sum(len(d["success"]) for d in results.values())
 global_rate = (total_detected / total_expected * 100) if total_expected else 0.0
 
+# Suma de tiempos y promedio (solo los válidos)
+total_time_ms = sum(d["process_time"] for d in results.values() if d["process_time"] is not None)
+count_times = sum(1 for d in results.values() if d["process_time"] is not None)
+average_time_ms = (total_time_ms / count_times) if count_times > 0 else 0
+
 print(f"\n=== Resumen Global ===")
 print(f"Total placas esperadas: {total_expected}")
 print(f"Total placas detectadas: {total_detected}")
 print(f"Tasa de éxito global: {global_rate:.2f}%")
+print(f"Tiempo promedio detección a OCR: {average_time_ms:.2f} ms")
 
 # --- Guardar resultados en JSON ---
-end_time = time.time()
-duration_seconds = int(end_time - start_time)
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-output_filename = f"QA_{timestamp}_{total_detected}-{len(results)}_{duration_seconds}s.json"
+output_filename = f"QA_{timestamp}_{total_detected}-{len(results)}_{int(average_time_ms)}ms.json"
 output_path = os.path.join(RESULTADOS_DIR, output_filename)
 
 with open(output_path, "w") as f:
