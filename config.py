@@ -60,7 +60,7 @@ except Exception:
     logging.error("Error al procesar TELEGRAM_CHAT_ID.")
     sys.exit(1)
 
-CONFIANZA_PATENTE = 60       # porcentaje mínimo para detección
+CONFIANZA_PATENTE = 70       # porcentaje mínimo para detección
 DISPLAY_DURATION = 2         # segundos para mantener en pantalla
 SNAPSHOT_LATENCY_MS = 500
 SENT_PLATES = {}
