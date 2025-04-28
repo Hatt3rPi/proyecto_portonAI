@@ -7,7 +7,7 @@ implementa detección de placas y reconocimiento OCR con tracking híbrido
 y procesamiento asíncrono de snapshots/OCR para mantener el bucle de frames
 lo más ligero posible.
 """
-
+import argparse
 import os
 import sys
 import time
@@ -43,6 +43,7 @@ from utils.api import send_backend, send_plate_async
 # --- Nuevo: tracking híbrido centrado en placas ---
 from utils.plate_tracker import PlateTrackerManager
 
+
 # ---------------------------------------------------------------------
 # Configuración de logging
 # ---------------------------------------------------------------------
@@ -67,11 +68,12 @@ logging.getLogger("yolov8").setLevel(logging.ERROR)
 executor = ThreadPoolExecutor(max_workers=4)
 
 
-def main():
+def main(video_path=None):
     """
     Función principal del sistema PortonAI.
     Implementa el bucle principal de procesamiento de video, detección,
     tracking y visualización, mientras delega snapshots/OCR a hilos.
+    Si se pasa `video_path`, se utilizará ese archivo en lugar de RTSP.
     """
     # -------------------
     # 1. INICIALIZACIÓN
@@ -106,27 +108,34 @@ def main():
     )
     snapshot_manager = SnapshotManager()
 
-    # 1.3 Apertura de stream
-    source = URL_HD if ONLINE_MODE else "proyecto_portonAI/debug/test_noche.mp4"
+    # 1.3 Apertura de stream o archivo de video
+    if video_path:
+        source = video_path
+        is_offline = True
+        logging.info(f"[VIDEO] Modo archivo: {video_path}")
+    else:
+        source = URL_HD if ONLINE_MODE else os.path.join("proyecto_portonAI", "debug", "test_noche.mp4")
+        is_offline = not ONLINE_MODE
+
+    # Abrir la fuente de vídeo (RTSP o archivo local)
     stream_LD = open_stream_with_suppressed_stderr(source)
     if not stream_LD.isOpened():
-        logging.error("No se pudo abrir el stream, reintentando en 2s...")
+        logging.error(f"No se pudo abrir la fuente: {source} — reintentando en 2s...")
         time.sleep(2)
         stream_LD = open_stream_with_suppressed_stderr(source)
         if not stream_LD.isOpened():
-            logging.error("Error fatal: No se pudo abrir el stream tras reintentar")
+            logging.error("Error fatal: No se pudo abrir la fuente tras reintentar")
             sys.exit(1)
-    logging.info("Stream abierto exitosamente")
+    logging.info("Fuente de vídeo abierta exitosamente")
 
     # 1.4 Lectura primer frame
     with suppress_c_stderr():
         ret, frame_ld = stream_LD.read()
     if not ret or not is_frame_valid(frame_ld):
-        logging.error("No se pudo leer el primer frame del stream")
+        logging.error("No se pudo leer el primer frame de la fuente")
         sys.exit(1)
 
     stream_h, stream_w = frame_ld.shape[:2]
-    is_offline = not ONLINE_MODE
     if is_offline:
         initial_snapshot = frame_ld.copy()
         snap_h, snap_w = initial_snapshot.shape[:2]
@@ -159,7 +168,7 @@ def main():
     invalid_frame_count = 0  # contador de frames inválidos consecutivos
 
     # Ruta de debug para snapshots
-    debug_dir = "/home/customware/PortonAI/proyecto_portonAI/debug"
+    debug_dir = os.path.join(os.path.dirname(__file__), "debug")
     os.makedirs(debug_dir, exist_ok=True)
 
     # Función para snapshot y OCR avanzado en background
@@ -189,7 +198,7 @@ def main():
             ox1, oy1 = int(x1 * sx), int(y1 * sy)
             ox2, oy2 = int(x2 * sx), int(y2 * sy)
             
-            # Verificar que las coordenadas son válidas
+            # Verificar coordenadas
             h_snap, w_snap = hd_snap.shape[:2]
             ox1 = max(0, min(ox1, w_snap-1))
             oy1 = max(0, min(oy1, h_snap-1))
@@ -215,7 +224,7 @@ def main():
                 candidate_text = ""
                 candidate_conf = 0.0
 
-            # 4) Si multiescala no arroja valor válido, fallback a OpenAI
+            # 4) Fallback a OpenAI si hace falta
             if not (candidate_text and is_valid_plate(candidate_text)):
                 result = ocr_processor.process_plate_image(roi, use_openai=True)
                 text = result.get("ocr_text", "").strip()
@@ -224,17 +233,19 @@ def main():
                 text = candidate_text
                 conf = candidate_conf
 
-            # 5) Validar y actualizar instancia sólo si es válido
+            # 5) Validar y almacenar
             if is_valid_plate(text):
                 inst.ocr_text = text
                 inst.ocr_status = 'completed'
                 inst.ocr_conf = conf
                 logging.info(f"Placa detectada y almacenada: {text}")
+
                 # 6) Guardar snapshot en disco para debug
                 timestamp_ms = int(time.time() * 1000)
                 filename = f"snapshot_{plate_id}_{timestamp_ms}_{text}.jpg"
                 cv2.imwrite(os.path.join(debug_dir, filename), roi)
-                # 7) Envío de resultados (una sola vez por placa)
+
+                # 7) Envío de resultados
                 executor.submit(send_plate_async, roi, hd_snap, text, "", inst.bbox)
                 send_backend(text, roi)
 
@@ -255,7 +266,7 @@ def main():
                 invalid_frame_count += 1
                 logging.warning("Frame inválido detectado, reintentando...")
                 if invalid_frame_count >= 5:
-                    logging.info("Reconectando stream tras 5 frames inválidos...")
+                    logging.info("Reconectando fuente tras 5 frames inválidos...")
                     stream_LD.release()
                     time.sleep(1)
                     stream_LD = open_stream_with_suppressed_stderr(source)
@@ -275,7 +286,7 @@ def main():
             all_detections = []
             results = model_plate.predict(inference_frame, device='cuda:0', verbose=False)
             
-            # Filtrar las detecciones por confianza y ordenar de mayor a menor confianza
+            # Filtrar y ordenar por confianza
             filtered_boxes = []
             for box in results[0].boxes:
                 conf = float(box.conf[0]) * 100
@@ -286,45 +297,33 @@ def main():
                     x2h = int(x2 * scale_x)
                     y2h = int(y2 * scale_y)
                     filtered_boxes.append((xh, yh, x2h, y2h, conf))
-            
-            # Ordenar por confianza descendente
             filtered_boxes.sort(key=lambda x: x[4], reverse=True)
-            
-            # Extraer solo las cajas sin la confianza para el tracker
             all_detections = [(x[0], x[1], x[2], x[3]) for x in filtered_boxes]
-            
+
+            # Visualización de detecciones brutas
             if DEBUG_MODE and all_detections:
-                # Mostrar todas las detecciones antes de filtrar
                 for i, (xh, yh, x2h, y2h) in enumerate(all_detections):
-                    # Color rojo para las primeras 5 detecciones (más confiables)
                     color = (0, 0, 255) if i < 5 else (0, 255, 0)
                     cv2.rectangle(frame_ld, (xh, yh), (x2h, y2h), color, 2)
-                    # Mostrar número de detección
                     cv2.putText(frame_ld, f"{i+1}", (xh, yh-5), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
-            # 2.5 Actualizar tracking híbrido con las detecciones ordenadas por confianza
+            # 2.5 Actualizar tracking híbrido
             active_plates = plate_manager.update(frame_ld, all_detections)
-            
-            # Registrar estadísticas de tracking cuando hay placas activas
             if active_plates:
                 logging.debug(f"Placas activas: {len(active_plates)} | IDs: {list(active_plates.keys())[:3]}...")
 
-            # 2.6 DIBUJAR TODAS LAS CAJAS Y ETIQUETAS Y ZONA DE EXCLUSIÓN
+            # 2.6 Dibujar cajas, etiquetas y zona de exclusión
             vis = frame_ld.copy()
-            
-            # Dibujar la zona de exclusión si estamos en modo debug
             if DEBUG_MODE:
                 h, w = frame_ld.shape[:2]
                 footer_y = int(h * plate_manager.footer_ratio)
                 cv2.line(vis, (0, footer_y), (w, footer_y), (0, 0, 255), 1)
                 cv2.putText(vis, "ZONA DE EXCLUSION", (10, footer_y+20), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-            
+
             for pid, inst in active_plates.items():
                 x1, y1, x2, y2 = inst.bbox
-                
-                # Validar que las coordenadas sean correctas (x2>x1, y2>y1)
                 if x2 <= x1 or y2 <= y1:
                     logging.debug(f"Ignorando caja inválida para placa {pid}: {(x1,y1,x2,y2)}")
                     continue
@@ -339,7 +338,7 @@ def main():
                 cv2.putText(vis, label, (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-            # Mostrar ventana y FPS si estamos en DEBUG
+            # Mostrar FPS y ventana en modo DEBUG
             if DEBUG_MODE:
                 now = time.time()
                 fps = 1.0 / (now - prev_time) if now > prev_time else 0.0
@@ -353,17 +352,14 @@ def main():
                 if key == ord('q'):
                     break
 
-            # 2.7 OCR EN STREAMING SÓLO PARA PENDIENTES
+            # 2.7 OCR en streaming para instancias pendientes
             for pid, inst in active_plates.items():
                 if inst.ocr_status != 'pending':
                     continue
                 x1, y1, x2, y2 = inst.bbox
-                
-                # Validación adicional de las coordenadas
                 if x2 <= x1 or y2 <= y1:
-                    logging.warning(f"Coordenadas de bbox inválidas para OCR en placa {pid}: {(x1,y1,x2,y2)}")
+                    logging.warning(f"Coordenadas inválidas para OCR en placa {pid}: {(x1,y1,x2,y2)}")
                     continue
-                    
                 w, h = x2 - x1, y2 - y1
                 if w * h < UMBRAL_SNAPSHOT_AREA:
                     continue
@@ -373,7 +369,7 @@ def main():
                 x2 = max(0, min(x2, w_ld))
                 y2 = max(0, min(y2, h_ld))
                 if x2 <= x1 or y2 <= y1:
-                    logging.warning(f"ROI inválido o fuera de rango para placa {pid}: {(x1,y1,x2,y2)}")
+                    logging.warning(f"ROI inválido para OCR en placa {pid}: {(x1,y1,x2,y2)}")
                     continue
                 crop = frame_ld[y1:y2, x1:x2]
                 try:
@@ -392,16 +388,13 @@ def main():
                 except Exception as e:
                     logging.warning(f"OCR stream error placa {pid}: {e}")
 
-            # 2.8 PROGRAMAR SNAPSHOT+OCR ASÍNCRONO SÓLO PARA PENDIENTES
+            # 2.8 Programar snapshot+OCR asíncrono para pendientes
             for pid, inst in active_plates.items():
                 if inst.ocr_status != 'pending' or pid in pending_jobs:
                     continue
                 x1, y1, x2, y2 = inst.bbox
-                
-                # Validación adicional
                 if x2 <= x1 or y2 <= y1:
                     continue
-                    
                 w, h = x2 - x1, y2 - y1
                 if w * h >= UMBRAL_SNAPSHOT_AREA:
                     pending_jobs.add(pid)
@@ -425,9 +418,20 @@ def main():
 if __name__ == '__main__':
     # Redirigir stderr para evitar logs de FFmpeg
     FNULL = open(os.devnull, 'w')
+
+    # --- Parseo de argumentos ---
+    parser = argparse.ArgumentParser(description="PortonAI – detección de patentes")
+    parser.add_argument(
+        "--video_path",
+        type=str,
+        help="Ruta a un archivo de video (.dav u otro) para procesar. Si no se indica, usa RTSP."
+    )
+    args = parser.parse_args()
+
+    # Loop principal con reinicio automático en caso de fallo crítico
     while True:
         try:
-            main()
+            main(video_path=args.video_path)
             break
         except Exception as e:
             logging.warning(f"Error crítico, reiniciando el sistema: {e}")
