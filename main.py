@@ -238,16 +238,20 @@ def main(video_path=None):
                 inst.ocr_text = text
                 inst.ocr_status = 'completed'
                 inst.ocr_conf = conf
+                if inst.detected_at is not None:
+                    full_time = time.time() - inst.detected_at
+                    full_time_ms = int(full_time * 1000)
+                else:
+                    full_time_ms = -1  # Por si algo falla, que sepas que es inválido
+
                 logging.info(f"Placa detectada y almacenada: {text}")
-                print(f"[PLACA] {text}")
+                
                 # Datos del ROI
                 roi_area = (ox2 - ox1) * (oy2 - oy1)
                 x_position = ox1
 
-                # Mensaje extendido
-                print(f"[PLACA] {text} | Área: {roi_area} px² | X inicial: {x_position}")
-
-
+                # Mensaje extendido con tiempo de procesamiento
+                print(f"[PLACA] {text} | Área: {roi_area} px² | X inicial: {x_position} | Tiempo detección a OCR: {full_time_ms} ms")
 
                 # 6) Guardar snapshot en disco para debug
                 timestamp_ms = int(time.time() * 1000)
@@ -256,7 +260,6 @@ def main(video_path=None):
                 # Guardar frame completo en debug
                 full_frame_filename = f"fullframe_{timestamp_ms}_{plate_id}_{text}.jpg"
                 cv2.imwrite(os.path.join(debug_dir, full_frame_filename), hd_snap)
-
 
                 # 7) Envío de resultados
                 executor.submit(send_plate_async, roi, hd_snap, text, "", inst.bbox)

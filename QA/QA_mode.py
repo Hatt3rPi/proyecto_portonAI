@@ -80,7 +80,6 @@ if updated:
     with open(PATENTES_JSON_PATH, "w") as f:
         json.dump(mapping, f, indent=4)
     print(f"[QA] Se actualizó {PATENTES_JSON_PATH}")
-
 # --- Inicio procesamiento ---
 start_time = time.time()
 results = {}
@@ -97,7 +96,7 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
     direccion = expected_info.get("direccion", "desconocida")
     marcha = expected_info.get("marcha", "desconocida")
 
-    print(f"[QA] {fname} | Esperada: {expected_plates} | Detectadas:        | ⏳ | Área:        px² | X:     ", end="\r")
+    print(f"[QA] {fname} | Esperada: {expected_plates} | Detectadas:        | ⏳ | Área:        px² | X:      | Tiempo:       ", end="\r")
     sys.stdout.flush()
 
     try:
@@ -114,9 +113,10 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
         detected_plates = []
         roi_area = None
         roi_x = None
-
+        process_time = None
         for line in output.splitlines():
             if line.strip().startswith("[PLACA]"):
+                parts = line.replace("[PLACA]", "").split("|")
                 parts = line.replace("[PLACA]", "").split("|")
                 plate_text = parts[0].strip()
                 detected_plates.append(plate_text)
@@ -126,6 +126,8 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
                         roi_area = int(part.replace("Área:", "").replace("px²", "").strip())
                     if "X inicial:" in part:
                         roi_x = int(part.replace("X inicial:", "").strip())
+                    if "Tiempo:" in part:
+                        process_time = int(part.replace("Tiempo:", "").replace("ms", "").strip())
 
         # Comparar resultados
         success = [p for p in expected_plates if p in detected_plates]
@@ -141,6 +143,12 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
             roi_x = f"{roi_x:>4}"  # 4 caracteres, alineado a la derecha
         else:
             roi_x = "N/A"
+            
+        # Formatear el tiempo de procesamiento
+        if process_time is not None:
+            process_time_str = f"{process_time:>5} ms"  # 5 caracteres, alineado a la derecha
+        else:
+            process_time_str = "  N/A  "
 
         # Definir símbolo
         if success:
@@ -152,9 +160,9 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
 
         detected_str = colorear_patente(detected_plates[0], expected_plates[0]) if detected_plates else "".ljust(6)
 
-        # Mostrar resultado
+        # Mostrar resultado con tiempo de procesamiento
         print(" " * 150, end="\r")
-        print(f"[QA] {fname} | Esperada: {expected_plates} | Detectadas: {detected_str} | {simbolo} | Área: {roi_area or ' N/A '} px² | X: {roi_x or ' N/A'}")
+        print(f"[QA] {fname} | Esperada: {expected_plates} | Detectadas: {detected_str} | {simbolo} | Área: {roi_area or ' N/A '} px² | X: {roi_x or ' N/A'} | Tiempo: {process_time_str}")
         sys.stdout.flush()
 
         results[fname] = {
@@ -166,7 +174,8 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
             "failed": failed,
             "success_rate": rate,
             "roi_area": roi_area,
-            "roi_x": roi_x
+            "roi_x": roi_x,
+            "process_time": process_time
         }
 
     except subprocess.CalledProcessError as e:

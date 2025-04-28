@@ -28,6 +28,8 @@ class PlateTrackInstance:
     missed_count: int = 0
     matched_detections: int = 0
     last_detection: Optional[Tuple[int, int, int, int]] = None
+    detected_at: Optional[float] = None 
+
 
 def calculate_iou(box1, box2):
     """Calcula la intersección sobre unión (IoU) entre dos cajas."""
@@ -279,7 +281,8 @@ class PlateTrackerManager:
                     tracker_id=track_id,
                     bbox=detection,
                     ocr_status='pending',
-                    last_detection=detection
+                    last_detection=detection,
+                    detected_at=time.time()  
                 )
                 
                 # Inicializar tracker
