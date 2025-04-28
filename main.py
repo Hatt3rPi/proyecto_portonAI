@@ -239,10 +239,11 @@ def main(video_path=None):
                 inst.ocr_status = 'completed'
                 inst.ocr_conf = conf
                 logging.info(f"Placa detectada y almacenada: {text}")
+                print(text)
 
                 # 6) Guardar snapshot en disco para debug
                 timestamp_ms = int(time.time() * 1000)
-                filename = f"snapshot_{plate_id}_{timestamp_ms}_{text}.jpg"
+                filename = f"snapshot_{timestamp_ms}_{plate_id}_{text}.jpg"
                 cv2.imwrite(os.path.join(debug_dir, filename), roi)
 
                 # 7) Envío de resultados
@@ -262,6 +263,23 @@ def main(video_path=None):
             # 2.1 Captura de frame
             with suppress_c_stderr():
                 ret, frame_ld = stream_LD.read()
+                if not ret:
+                    if video_path:
+                        # Estamos en modo archivo y el video terminó
+                        logging.info("Video finalizado correctamente, cerrando proceso...")
+                        break
+                    else:
+                        # Estamos en RTSP, entonces reintentamos
+                        invalid_frame_count += 1
+                        logging.warning("Frame inválido detectado, reintentando...")
+                        if invalid_frame_count >= 5:
+                            logging.info("Reconectando stream tras 5 frames inválidos...")
+                            stream_LD.release()
+                            time.sleep(1)
+                            stream_LD = open_stream_with_suppressed_stderr(source)
+                            invalid_frame_count = 0
+                        time.sleep(0.5)
+                        continue
             if not ret or not is_frame_valid(frame_ld):
                 invalid_frame_count += 1
                 logging.warning("Frame inválido detectado, reintentando...")
