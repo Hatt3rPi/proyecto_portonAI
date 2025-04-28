@@ -1,0 +1,110 @@
+{
+    "NVR_ch1_main_20250414074620_20250414074630.dav": {
+        "expected": [
+            "FDPG32"
+        ],
+        "direccion": "desconocida",
+        "marcha": "desconocida",
+        "detected": [],
+        "success": [],
+        "failed": [
+            "FDPG32"
+        ],
+        "success_rate": 0.0
+    },
+    "NVR_ch1_main_20250414133110_20250414133120.dav": {
+        "expected": [
+            "TFWF62"
+        ],
+        "direccion": "desconocida",
+        "marcha": "desconocida",
+        "detected": [],
+        "success": [],
+        "failed": [
+            "TFWF62"
+        ],
+        "success_rate": 0.0
+    },
+    "NVR_ch1_main_20250415144940_20250415144950.dav": {
+        "expected": [
+            "LVKR93"
+        ],
+        "direccion": "desconocida",
+        "marcha": "desconocida",
+        "detected": [
+            "LVKR93"
+        ],
+        "success": [
+            "LVKR93"
+        ],
+        "failed": [],
+        "success_rate": 100.0
+    },
+    "NVR_ch1_main_20250415165024_20250415165034.dav": {
+        "expected": [
+            "FDPG32"
+        ],
+        "direccion": "desconocida",
+        "marcha": "desconocida",
+        "detected": [],
+        "success": [],
+        "failed": [
+            "FDPG32"
+        ],
+        "success_rate": 0.0
+    },
+    "NVR_ch1_main_20250416232152_20250416232159.dav": {
+        "expected": [
+            "JTJR87"
+        ],
+        "direccion": "desconocida",
+        "marcha": "desconocida",
+        "detected": [],
+        "success": [],
+        "failed": [
+            "JTJR87"
+        ],
+        "success_rate": 0.0
+    },
+    "NVR_ch1_main_20250417065202_20250417065214.dav": {
+        "expected": [
+            "LJLJ27"
+        ],
+        "direccion": "desconocida",
+        "marcha": "desconocida",
+        "detected": [],
+        "success": [],
+        "failed": [
+            "LJLJ27"
+        ],
+        "success_rate": 0.0
+    },
+    "NVR_ch1_main_20250417155614_20250417155624.dav": {
+        "expected": [
+            "SWVT25"
+        ],
+        "direccion": "desconocida",
+        "marcha": "desconocida",
+        "detected": [
+            "SWVV25"
+        ],
+        "success": [],
+        "failed": [
+            "SWVT25"
+        ],
+        "success_rate": 0.0
+    },
+    "NVR_ch1_main_20250422191535_20250422191540.dav": {
+        "expected": [
+            "JGXK82"
+        ],
+        "direccion": "desconocida",
+        "marcha": "desconocida",
+        "detected": [],
+        "success": [],
+        "failed": [
+            "JGXK82"
+        ],
+        "success_rate": 0.0
+    }
+}

@@ -239,12 +239,24 @@ def main(video_path=None):
                 inst.ocr_status = 'completed'
                 inst.ocr_conf = conf
                 logging.info(f"Placa detectada y almacenada: {text}")
-                print(text)
+                print(f"[PLACA] {text}")
+                # Datos del ROI
+                roi_area = (ox2 - ox1) * (oy2 - oy1)
+                x_position = ox1
+
+                # Mensaje extendido
+                print(f"[PLACA] {text} | Área: {roi_area} px² | X inicial: {x_position}")
+
+
 
                 # 6) Guardar snapshot en disco para debug
                 timestamp_ms = int(time.time() * 1000)
-                filename = f"snapshot_{timestamp_ms}_{plate_id}_{text}.jpg"
+                filename=f"fullframe_{timestamp_ms}_{plate_id}_{text}_ROI.jpg"
                 cv2.imwrite(os.path.join(debug_dir, filename), roi)
+                # Guardar frame completo en debug
+                full_frame_filename = f"fullframe_{timestamp_ms}_{plate_id}_{text}.jpg"
+                cv2.imwrite(os.path.join(debug_dir, full_frame_filename), hd_snap)
+
 
                 # 7) Envío de resultados
                 executor.submit(send_plate_async, roi, hd_snap, text, "", inst.bbox)
