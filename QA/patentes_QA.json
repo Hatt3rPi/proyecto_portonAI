@@ -3,64 +3,64 @@
         "patentes": [
             "FDPG32"
         ],
-        "direccion": "desconocida",
-        "marcha": "desconocida",
-        "iluminacion": "desconocida"
+        "direccion": "salida",
+        "marcha": "adelante",
+        "iluminacion": "día/noche"
     },
     "NVR_ch1_main_20250414133110_20250414133120.dav": {
         "patentes": [
             "TFWF62"
         ],
-        "direccion": "desconocida",
-        "marcha": "desconocida",
-        "iluminacion": "desconocida"
+        "direccion": "salida",
+        "marcha": "adelante",
+        "iluminacion": "día"
     },
     "NVR_ch1_main_20250415144940_20250415144950.dav": {
         "patentes": [
             "LVKR93"
         ],
-        "direccion": "desconocida",
-        "marcha": "desconocida",
-        "iluminacion": "desconocida"
+        "direccion": "salida",
+        "marcha": "retroceso",
+        "iluminacion": "día"
     },
     "NVR_ch1_main_20250415165024_20250415165034.dav": {
         "patentes": [
             "FDPG32"
         ],
-        "direccion": "desconocida",
-        "marcha": "desconocida",
-        "iluminacion": "desconocida"
+        "direccion": "salida",
+        "marcha": "adelante",
+        "iluminacion": "día"
     },
     "NVR_ch1_main_20250416232152_20250416232159.dav": {
         "patentes": [
             "JTJR87"
         ],
-        "direccion": "desconocida",
-        "marcha": "desconocida",
-        "iluminacion": "desconocida"
+        "direccion": "ingreso",
+        "marcha": "adelante",
+        "iluminacion": "noche"
     },
     "NVR_ch1_main_20250417065202_20250417065214.dav": {
         "patentes": [
             "LJLJ27"
         ],
-        "direccion": "desconocida",
-        "marcha": "desconocida",
-        "iluminacion": "desconocida"
+        "direccion": "ingreso",
+        "marcha": "retroceso",
+        "iluminacion": "noche"
     },
     "NVR_ch1_main_20250417155614_20250417155624.dav": {
         "patentes": [
             "SWVT25"
         ],
-        "direccion": "desconocida",
-        "marcha": "desconocida",
-        "iluminacion": "desconocida"
+        "direccion": "ingreso",
+        "marcha": "adelante",
+        "iluminacion": "día"
     },
     "NVR_ch1_main_20250422191535_20250422191540.dav": {
         "patentes": [
             "JGXK82"
         ],
-        "direccion": "desconocida",
-        "marcha": "desconocida",
-        "iluminacion": "desconocida"
+        "direccion": "ingreso",
+        "marcha": "adelante",
+        "iluminacion": "noche"
     }
 }

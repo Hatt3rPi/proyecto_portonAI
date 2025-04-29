@@ -239,6 +239,52 @@ print(f"Total placas detectadas: {total_detected}")
 print(f"Tasa de éxito global: {global_rate:.2f}%")
 print(f"Tiempo promedio detección a OCR: {average_time_ms:.2f} ms")
 
+# --- Estadísticas detalladas ---
+from collections import defaultdict
+
+# Estadísticas por patente
+print("\n=== Estadísticas Detalladas por Patente ===")
+plate_stats = defaultdict(lambda: {'expected': 0, 'success': 0, 'times': []})
+for info in results.values():
+    for plate in info['expected']:
+        plate_stats[plate]['expected'] += 1
+        if plate in info['success']:
+            plate_stats[plate]['success'] += 1
+        if info['process_time'] is not None:
+            plate_stats[plate]['times'].append(info['process_time'])
+
+print(f"{'Patente':10} {'Total':5} {'Detectado':9} {'Tasa%':6} {'TiempoAvg(ms)':14}")
+for plate, stats in plate_stats.items():
+    tot  = stats['expected']
+    succ = stats['success']
+    rate = (succ / tot * 100) if tot else 0.0
+    avgt = (sum(stats['times']) / len(stats['times'])) if stats['times'] else 0.0
+    print(f"{plate:10} {tot:5} {succ:9} {rate:6.2f}% {avgt:14.2f}")
+
+# Función de ayuda para cálculo por campo
+def print_group_stats(field, title):
+    print(f"\n=== Estadísticas por {title} ===")
+    grp = defaultdict(lambda: {'expected': 0, 'success': 0, 'times': []})
+    for info in results.values():
+        key = info.get(field, 'desconocida')
+        grp[key]['expected'] += len(info['expected'])
+        grp[key]['success']   += len(info['success'])
+        if info['process_time'] is not None:
+            grp[key]['times'].append(info['process_time'])
+
+    print(f"{title:15} {'Total':5} {'Detectado':9} {'Tasa%':6} {'TiempoAvg(ms)':14}")
+    for key, stats in grp.items():
+        tot  = stats['expected']
+        succ = stats['success']
+        rate = (succ / tot * 100) if tot else 0.0
+        avgt = (sum(stats['times']) / len(stats['times'])) if stats['times'] else 0.0
+        print(f"{key:15} {tot:5} {succ:9} {rate:6.2f}% {avgt:14.2f}")
+
+# Estadísticas por dirección, marcha e iluminación
+print_group_stats('direccion',   'Dirección')
+print_group_stats('marcha',      'Marcha')
+print_group_stats('iluminacion', 'Iluminación')
+
 # --- Guardar resultados en JSON ---
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 output_filename = f"QA_{timestamp}_{total_detected}-{len(results)}_{int(average_time_ms)}ms.json"
