@@ -52,18 +52,49 @@ if not os.path.exists(PATENTES_JSON_PATH) or os.path.getsize(PATENTES_JSON_PATH)
     with open(PATENTES_JSON_PATH, "w") as f:
         json.dump({}, f, indent=4)
 
-# --- Cargar patentes esperadas ---
+# --- Cargar patentes esperadas y normalizar formato antiguo/dañado ---
 with open(PATENTES_JSON_PATH, "r") as f:
     mapping = json.load(f)
-    for k, v in mapping.items():
-        if isinstance(v, list):
-            mapping[k] = {
-                "patentes": v,
-                "direccion": "desconocida",
-                "marcha": "desconocida"
-            }
-            print(f"[QA] Corrigiendo formato antiguo para {k}")
 
+normalized = False
+for key, val in list(mapping.items()):
+    # Lista antigua → dict con claves completas
+    if isinstance(val, list):
+        mapping[key] = {
+            "patentes": val,
+            "direccion": "desconocida",
+            "marcha": "desconocida",
+            "iluminacion":"desconocida"
+        }
+        normalized = True
+        print(f"[QA] Corrigiendo formato antiguo (lista) para {key}")
+
+    # Dict incompleto → añadir campos que falten
+    elif isinstance(val, dict):
+        entry = val.copy()
+        changed = False
+        if "patentes" not in entry or not isinstance(entry["patentes"], list):
+            entry["patentes"] = entry.get("patentes", []) if isinstance(entry.get("patentes"), list) else []
+            changed = True
+        if "direccion" not in entry:
+            entry["direccion"] = "desconocida"
+            changed = True
+        if "marcha" not in entry:
+            entry["marcha"] = "desconocida"
+            changed = True
+        if "iluminacion" not in entry:
+            entry["iluminacion"] = "desconocida"
+            changed = True
+        if changed:
+            mapping[key] = entry
+            normalized = True
+            print(f"[QA] Añadiendo campos faltantes para {key}")
+
+# Si hubo transformaciones, reescribimos el JSON
+if normalized:
+    with open(PATENTES_JSON_PATH, "w") as f:
+        json.dump(mapping, f, indent=4)
+    print(f"[QA] Se guardó {PATENTES_JSON_PATH} con formato normalizado.")
 # --- Añadir videos faltantes si es necesario ---
 updated = False
 for fname in sorted(os.listdir(VIDEOS_DIR)):
@@ -71,7 +102,8 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
         mapping[fname] = {
             "patentes": ["TBC"],
             "direccion": "desconocida",
-            "marcha": "desconocida"
+            "marcha": "desconocida",
+            "iluminacion":"desconocida"
         }
         updated = True
         print(f"[QA] Añadido {fname} al JSON.")
@@ -80,6 +112,7 @@ if updated:
     with open(PATENTES_JSON_PATH, "w") as f:
         json.dump(mapping, f, indent=4)
     print(f"[QA] Se actualizó {PATENTES_JSON_PATH}")
+
 # --- Inicio procesamiento ---
 start_time = time.time()
 results = {}
@@ -95,8 +128,13 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
     expected_plates = expected_info.get("patentes", ["TBC"])
     direccion = expected_info.get("direccion", "desconocida")
     marcha = expected_info.get("marcha", "desconocida")
+    iluminacion = expected_info.get("iluminacion", "desconocida")
 
-    print(f"[QA] {fname} | Esperada: {expected_plates} | Detectadas:        | ⏳ | Área:        px² | X:      | Tiempo:       ", end="\r")
+    # Convertimos la lista en cadena simple para impresión
+    expected_str = ", ".join(expected_plates)
+
+    # Línea de estado en curso (antes de procesar)
+    print(f"[QA] {fname} | Esperada: {expected_str} | Detectadas:        | ⏳ | Área:        px² | X:      | Tiempo:       ", end="\r")
     sys.stdout.flush()
 
     try:
@@ -114,9 +152,9 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
         roi_area = None
         roi_x = None
         process_time = None
+
         for line in output.splitlines():
             if line.strip().startswith("[PLACA]"):
-                parts = line.replace("[PLACA]", "").split("|")
                 parts = line.replace("[PLACA]", "").split("|")
                 plate_text = parts[0].strip()
                 detected_plates.append(plate_text)
@@ -133,24 +171,15 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
         success = [p for p in expected_plates if p in detected_plates]
         failed = [p for p in expected_plates if p not in detected_plates]
         rate = (len(success) / len(expected_plates) * 100) if expected_plates else 0.0
-        # Formato de área y X fijo en longitud
-        if roi_area is not None:
-            roi_area = f"{roi_area:>6}"  # 6 caracteres, alineado a la derecha
-        else:
-            roi_area = "  N/A "
 
-        if roi_x is not None:
-            roi_x = f"{roi_x:>4}"  # 4 caracteres, alineado a la derecha
-        else:
-            roi_x = " N/A"
-            
-        # Formatear el tiempo de procesamiento
-        if process_time is not None:
-            process_time_str = f"{process_time:>5} ms"  # 5 caracteres, alineado a la derecha
-        else:
-            process_time_str = "  N/A  "
+        # Formatear área y X para mostrar siempre ancho fijo
+        roi_area = f"{roi_area:>6}" if roi_area is not None else "  N/A "
+        roi_x    = f"{roi_x:>4}"    if roi_x    is not None else " N/A"
 
-        # Definir símbolo
+        # Formatear tiempo de procesamiento
+        process_time_str = f"{process_time:>5} ms" if process_time is not None else "  N/A  "
+
+        # Símbolo de estado
         if success:
             simbolo = "🟢"
         elif not detected_plates:
@@ -158,17 +187,18 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
         else:
             simbolo = "🔴"
 
-        detected_str = colorear_patente(detected_plates[0], expected_plates[0]) if detected_plates else "".ljust(6)
+        detected_str = colorear_patente(detected_plates[0], expected_plates[0]) if detected_plates else "".ljust(len(expected_str))
 
-       # Mostrar resultado con tiempo de procesamiento
-        print(" " * 200, end="\r")  # 💥 Limpiar línea anterior
-        print(f"[QA] {fname} | Esperada: {', '.join(expected_plates)} | Detectadas: {detected_str} | {simbolo} | Área: {roi_area} px² | X: {roi_x} | Tiempo: {process_time_str}")
+        # Mostrar resultado final de este video
+        print(" " * 150, end="\r")  # Limpiar línea anterior
+        print(f"[QA] {fname} | Esperada: {expected_str} | Detectadas: {detected_str} | {simbolo} | Área: {roi_area} px² | X: {roi_x} | Tiempo: {process_time_str}")
         sys.stdout.flush()
 
         results[fname] = {
             "expected": expected_plates,
             "direccion": direccion,
             "marcha": marcha,
+            "iluminacion": iluminacion,
             "detected": detected_plates,
             "success": success,
             "failed": failed,
@@ -184,12 +214,14 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
             "expected": expected_plates,
             "direccion": direccion,
             "marcha": marcha,
+            "iluminacion": iluminacion,
             "detected": [],
             "success": [],
             "failed": expected_plates,
             "success_rate": 0.0,
             "roi_area": None,
-            "roi_x": None
+            "roi_x": None,
+            "process_time": None
         }
 
 # --- Resumen global ---
@@ -197,10 +229,9 @@ total_expected = sum(len(d["expected"]) for d in results.values())
 total_detected = sum(len(d["success"]) for d in results.values())
 global_rate = (total_detected / total_expected * 100) if total_expected else 0.0
 
-# Suma de tiempos y promedio (solo los válidos)
-total_time_ms = sum(d["process_time"] for d in results.values() if d["process_time"] is not None)
-count_times = sum(1 for d in results.values() if d["process_time"] is not None)
-average_time_ms = (total_time_ms / count_times) if count_times > 0 else 0
+# Cálculo tiempo promedio
+times = [d["process_time"] for d in results.values() if d["process_time"] is not None]
+average_time_ms = (sum(times) / len(times)) if times else 0
 
 print(f"\n=== Resumen Global ===")
 print(f"Total placas esperadas: {total_expected}")
