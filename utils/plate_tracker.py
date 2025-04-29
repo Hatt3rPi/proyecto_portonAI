@@ -88,9 +88,10 @@ class PlateTrackerManager:
     Administrador de trackers para placas vehiculares usando un enfoque híbrido.
     """
     
-    def __init__(self, model_ocr=None, ocr_names=None, iou_thresh=0.5, 
+    def __init__(self, model_ocr=None, ocr_names=None, iou_thresh=0.5,
                  max_missed=7, detect_every=5, min_detection_confidence=0.7,
-                 exclude_footer=True, footer_ratio=0.85):
+                 exclude_footer=True, footer_ratio=0.85,
+                 dedup_iou_thresh=0.9):
         """
         Inicializa el administrador de trackers.
         
@@ -106,6 +107,7 @@ class PlateTrackerManager:
         """
         self.active_instances = {}
         self.iou_thresh = iou_thresh
+        self.dedup_iou_thresh = dedup_iou_thresh
         self.max_missed = max_missed
         self.detect_every = detect_every
         self.frame_count = 0
@@ -194,18 +196,26 @@ class PlateTrackerManager:
         self.frame_count += 1
         frame_shape = frame.shape
         
-        # Filtrar detecciones que estén en la zona del footer o sean inválidas
-        valid_detections = []
-        for i, detection in enumerate(detections):
-            if self._is_valid_detection(detection, frame_shape):
-                valid_detections.append(detection)
-            else:
-                pass  # Ignoramos silenciosamente las detecciones inválidas
-                
-        # Reemplazar la lista original con solo las detecciones válidas
-        detections = valid_detections
         
-        # 1. Actualizar trackers existentes
+        # 1) Filtrar detecciones inválidas (footer, tamaño, aspecto…)
+        valid_detections = []
+        for det in detections:
+            if self._is_valid_detection(det, frame_shape):
+                valid_detections.append(det)
+        # Reemplazamos detections por las válidas
+        detections = valid_detections
+
+        # 2) Dedupe temprana: eliminar detecciones con IoU > dedup_iou_thresh
+        unique_dets = []
+        for det in detections:
+            # si alguna en unique_dets está solapada en exceso, la descartamos
+            if not any(calculate_iou(det, ud) > getattr(self, 'dedup_iou_thresh', 0.9)
+                       for ud in unique_dets):
+                unique_dets.append(det)
+        detections = unique_dets
+
+        
+        # 3. Actualizar trackers existentes
         for track_id, instance in list(self.active_instances.items()):
             if instance.tracker:
                 success, box = instance.tracker.update(frame)
@@ -225,12 +235,12 @@ class PlateTrackerManager:
                 if not success:
                     instance.missed_count += 1
         
-        # 2. Asociación IoU entre detecciones y trackers existentes
+        # 4. Asociación IoU entre detecciones y trackers existentes
         matched_tracks = set()
         matched_detections = set()
         matches = []  # Lista de (track_id, detection_idx, iou)
         
-        # 2.1 Calcular todas las coincidencias posibles por IoU
+        # 4.1 Calcular todas las coincidencias posibles por IoU
         for track_id, instance in self.active_instances.items():
             for i, detection in enumerate(detections):
                 if i in matched_detections:
@@ -240,10 +250,10 @@ class PlateTrackerManager:
                 if iou >= self.iou_thresh:
                     matches.append((track_id, i, iou))
         
-        # 2.2 Ordenar coincidencias por IoU descendente
+        # 4.2 Ordenar coincidencias por IoU descendente
         matches.sort(key=lambda x: x[2], reverse=True)
         
-        # 2.3 Asignar coincidencias de mayor a menor IoU
+        # 4.3 Asignar coincidencias de mayor a menor IoU
         for track_id, detection_idx, iou in matches:
             if track_id not in matched_tracks and detection_idx not in matched_detections:
                 matched_tracks.add(track_id)
@@ -267,7 +277,7 @@ class PlateTrackerManager:
                             logging.warning(f"Error al inicializar tracker: {e}")
                             instance.tracker = None
         
-        # 3. Crear nuevas instancias para detecciones no asociadas
+        # 5. Crear nuevas instancias para detecciones no asociadas
         for i, detection in enumerate(detections):
             if i not in matched_detections:
                 track_id = str(uuid.uuid4())
@@ -297,17 +307,17 @@ class PlateTrackerManager:
                 
                 self.active_instances[track_id] = new_instance
         
-        # 4. Eliminar trackers con demasiados frames perdidos
+        # 6. Eliminar trackers con demasiados frames perdidos
         for track_id in list(self.active_instances.keys()):
             if self.active_instances[track_id].missed_count > self.max_missed:
                 if self.active_instances[track_id].ocr_status == 'completed':
                     logging.debug(f"Eliminando tracker {track_id} con OCR completado: {self.active_instances[track_id].ocr_text}")
                 del self.active_instances[track_id]
         
-        # 5. Deduplicar placas si ya tenemos OCR completo y coinciden en texto
+        # 7. Deduplicar placas si ya tenemos OCR completo y coinciden en texto
         self._deduplicate_by_ocr_text()
         
-        # 6. Filtrar instancias con texto OCR inválido (como "CUSTOMWARE")
+        # 8. Filtrar instancias con texto OCR inválido (como "CUSTOMWARE")
         self._filter_invalid_ocr_text()
         
         return self.active_instances

@@ -21,7 +21,7 @@ BASE = os.path.abspath(os.path.dirname(__file__))
 # ---------------------------------------------------------------------
 # CONFIGURACIÓN GENERAL: Modo DEBUG y logging
 # ---------------------------------------------------------------------
-DEBUG_MODE = False  # Cambia a False para producción
+DEBUG_MODE = True  # Cambia a False para producción
 if DEBUG_MODE:
     logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 else:

@@ -128,8 +128,8 @@ def main(video_path=None):
     # 1.2b Tracking híbrido y snapshot
     plate_manager = PlateTrackerManager(
         model_ocr, manager.get_ocr_names(),
-        iou_thresh=0.5,  # Aumentado de 0.3 a 0.5 para ser más estricto en la asociación
-        max_missed=7,    # Aumentado de 5 a 7 para persistir mejor los trackers existentes
+        iou_thresh=0.7,  # Aumentado de 0.3 a 0.5 para ser más estricto en la asociación
+        max_missed=9,    # Aumentado de 5 a 7 para persistir mejor los trackers existentes
         detect_every=5,
         min_detection_confidence=CONFIANZA_PATENTE * 0.01,  # Convertir porcentaje a decimal
         exclude_footer=True,  # Activar exclusión de footer
