@@ -372,9 +372,6 @@ def main(video_path=None):
 
             # 2.5 Actualizar tracking híbrido
             active_plates = plate_manager.update(frame_ld, all_detections)
-            if active_plates:
-                logging.debug(f"Placas activas: {len(active_plates)} | IDs: {list(active_plates.keys())[:3]}...")
-
             # 2.6 Dibujar cajas, etiquetas y zona de exclusión
             vis = frame_ld.copy()
             if DEBUG_MODE:
