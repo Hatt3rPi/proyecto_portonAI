@@ -120,7 +120,7 @@ DAY_THRESHOLD = 70     # brillo
 # URLs y endpoints
 # ---------------------------------------------------------------------
 SNAPSHOT_URL = "http://192.168.0.124/cgi-bin/snapshot.cgi?1"
-URL_HD = "rtsp://admin:emilia09@192.168.0.124:554/cam/realmonitor?channel=1&subtype=1&tcp"
+URL_HD = "rtsp://admin:emilia09@192.168.0.124:554/cam/realmonitor?channel=1&subtype=0&tcp"
 
 BACKEND_URL = "https://porton-ia-back-production.up.railway.app/accesLog/registro"
 try:

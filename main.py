@@ -183,6 +183,7 @@ def main(video_path=None):
             logging.error(f"Error obteniendo snapshot inicial: {e}")
             sys.exit(1)
         snap_h, snap_w = initial_snapshot.shape[:2]
+        logging.info(f"Dimensiones del stream (HD): {stream_w}x{stream_h}")
         logging.info(f"Dimensiones del snapshot (HD): {snap_w}x{snap_h}")
 
     # 1.6 Preparación de UI y auxiliares
@@ -392,22 +393,22 @@ def main(video_path=None):
                 end_y   = int(OCR_STREAM_ZONE["end_y_pct"] * h)
 
                 # Línea izquierda
-                cv2.line(vis, (start_x, start_y), (start_x, end_y), (255, 255, 0), 1)
+                cv2.line(vis, (start_x, start_y), (start_x, end_y), (255, 255, 0), 2)
                 # Línea derecha
-                cv2.line(vis, (end_x, start_y), (end_x, end_y), (255, 255, 0), 1)
+                cv2.line(vis, (end_x, start_y), (end_x, end_y), (255, 255, 0), 2)
                 # Línea superior
-                cv2.line(vis, (start_x, start_y), (end_x, start_y), (255, 255, 0), 1)
+                cv2.line(vis, (start_x, start_y), (end_x, start_y), (255, 255, 0), 2)
                 # Línea inferior
-                cv2.line(vis, (start_x, end_y), (end_x, end_y), (255, 255, 0), 1)
+                cv2.line(vis, (start_x, end_y), (end_x, end_y), (255, 255, 0), 2)
 
                 # Texto indicador
                 cv2.putText(vis, "Zona OCR Stream", (start_x + 5, start_y - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
 
             for pid, inst in active_plates.items():
                 x1, y1, x2, y2 = inst.bbox
                 if x2 <= x1 or y2 <= y1:
-                    logging.debug(f"Ignorando caja inválida para placa {pid}: {(x1,y1,x2,y2)}")
+                    logging.debug(f"[2.6] Ignorando caja inválida para placa {pid}: {(x1,y1,x2,y2)}")
                     continue
                     
                 if inst.ocr_status == 'completed':
@@ -454,7 +455,7 @@ def main(video_path=None):
                 x2 = max(0, min(x2, w_ld))
                 y2 = max(0, min(y2, h_ld))
                 if x2 <= x1 or y2 <= y1:
-                    logging.warning(f"ROI inválido para OCR en placa {pid}: {(x1,y1,x2,y2)}")
+                    logging.warning(f"[2.7]  ROI inválido para OCR en placa {pid}: {(x1,y1,x2,y2)}")
                     continue
                 crop = frame_ld[y1:y2, x1:x2]
                 try:
@@ -467,23 +468,30 @@ def main(video_path=None):
                         inst.ocr_stream = best
                         inst.ocr_text   = text
                         inst.ocr_status = 'completed'
-                        logging.info(f"OCR stream válido placa {pid}: '{text}'")
-                    else:
-                        logging.debug(f"OCR stream inválido placa {pid}: '{text}'")
+                        logging.info(f"[2.7] OCR stream válido placa {pid}: '{text}'")
                 except Exception as e:
-                    logging.warning(f"OCR stream error placa {pid}: {e}")
+                    logging.warning(f"[2.7] OCR stream error placa {pid}: {e}")
 
-            # 2.8 Programar snapshot+OCR asíncrono para pendientes
-            for pid, inst in active_plates.items():
-                if inst.ocr_status != 'pending' or pid in pending_jobs:
-                    continue
-                x1, y1, x2, y2 = inst.bbox
-                if x2 <= x1 or y2 <= y1:
-                    continue
-                w, h = x2 - x1, y2 - y1
-                if w * h >= UMBRAL_SNAPSHOT_AREA:
-                    pending_jobs.add(pid)
-                    executor.submit(schedule_snapshot_and_ocr, pid, inst)
+            # # 2.8 Programar snapshot+OCR asíncrono para pendientes
+            # for pid, inst in active_plates.items():
+            #     if inst.ocr_status != 'pending' or pid in pending_jobs:
+            #         continue
+
+            #     x1, y1, x2, y2 = inst.bbox
+            #     if x2 <= x1 or y2 <= y1:
+            #         continue
+            #     w, h = x2 - x1, y2 - y1
+
+            #     # **Nuevo**: descartar fuera de zona OCR
+            #     if not is_in_ocr_stream_zone((x1, y1, x2, y2), frame_ld.shape, OCR_STREAM_ZONE):
+            #         #logging.debug(f"[2.8] Omitido snapshot fuera de zona OCR para {pid}: {inst.bbox}")
+            #         continue
+
+            #     if w * h >= UMBRAL_SNAPSHOT_AREA:
+            #         logging.debug(f"[2.8] Snapshot async solicitado para {pid} con bbox={inst.bbox}")
+            #         pending_jobs.add(pid)
+            #         executor.submit(schedule_snapshot_and_ocr, pid, inst)
+
 
         except KeyboardInterrupt:
             break
