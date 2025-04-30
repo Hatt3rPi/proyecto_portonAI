@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from config import (
     DEBUG_MODE, ONLINE_MODE, URL_HD, CONFIANZA_PATENTE,
     FPS_DEQUE_MAXLEN, UMBRAL_SNAPSHOT_AREA,
-    NIGHT_THRESHOLD, DAY_THRESHOLD
+    NIGHT_THRESHOLD, DAY_THRESHOLD, OCR_STREAM_ZONE
 )
 from models import ModelManager
 
@@ -67,13 +67,6 @@ logging.getLogger("yolov8").setLevel(logging.ERROR)
 # Executor global para snapshots y OCR en background
 executor = ThreadPoolExecutor(max_workers=4)
 
-# --- Configuración de OCR Stream basado en zona de detección (columna imaginaria) ---
-OCR_STREAM_ZONE = {
-    "start_x_pct": 0.07,   # Desde el 7% del ancho
-    "end_x_pct": 0.35,     # Hasta el 35% del ancho
-    "start_y_pct": 0.10,   # Desde el 10% del alto
-    "end_y_pct": 0.85      # Hasta el 85% del alto (o zona de exclusión)
-}
 def is_in_ocr_stream_zone(bbox, frame_shape, zone_def):
     """
     Verifica si un bbox está completamente dentro de la zona de OCR stream.

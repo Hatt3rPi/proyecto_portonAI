@@ -139,3 +139,11 @@ WIDTH_OCR = 640
 HEIGHT_OCR = 320
 AREA_OCR = WIDTH_OCR * HEIGHT_OCR
 FAST_AREA_RATE_THRESHOLD = 0.05  # px²/ms
+
+# Configuración de la zona de OCR Stream basado en zona de detección (columna imaginaria)
+OCR_STREAM_ZONE = {
+    "start_x_pct": 0.07,   # Desde el 7% del ancho
+    "end_x_pct": 0.35,     # Hasta el 35% del ancho
+    "start_y_pct": 0.10,   # Desde el 10% del alto
+    "end_y_pct": 0.85      # Hasta el 85% del alto (o zona de exclusión)
+}
