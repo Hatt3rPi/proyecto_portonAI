@@ -163,7 +163,7 @@ def schedule_snapshot_and_ocr(plate_id, inst):
             text = candidate_text
             conf = candidate_conf
 
-        # 5) Validar y almacenar
+        # 5) Validar y almacenar -> debe aplicarse para los 3 OCR una vez que tengan un texto válido
         if is_valid_plate(text):
             inst.ocr_text = text
             inst.ocr_status = 'completed'
@@ -181,7 +181,7 @@ def schedule_snapshot_and_ocr(plate_id, inst):
             x_position = ox1
 
             # Mensaje extendido con tiempo de procesamiento
-            print(f"[PLACA] {text} | Área: {roi_area} px² | X inicial: {x_position} | Tiempo detección a OCR: {full_time_ms} ms")
+            print(f"[PLACA] {text} | Área: {roi_area} px² | X inicial: {x_position} | Tiempo detección a OCR: {full_time_ms} ms | Res: {hd_snap.shape[1]}x{hd_snap.shape[0]}")
 
             # 6) Guardar snapshot en disco para debug
             timestamp_ms = int(time.time() * 1000)
@@ -477,7 +477,54 @@ def main(video_path=None):
                         inst.ocr_stream = best
                         inst.ocr_text   = text
                         inst.ocr_status = 'completed'
+                        inst.ocr_conf   = best.get("confidence", 0.0)  # Aseguramos guardar la confianza
                         logging.info(f"[2.7] OCR stream válido placa {pid}: '{text}'")
+                        
+                        # 5) Validar y almacenar para OCR stream (como en snapshot)
+                        # - Calcular tiempo de detección a OCR
+                        if inst.detected_at is not None:
+                            full_time = time.time() - inst.detected_at
+                            full_time_ms = int(full_time * 1000)
+                        else:
+                            full_time_ms = -1
+                            
+                        # - Datos del ROI
+                        roi_area = (x2 - x1) * (y2 - y1)
+                        x_position = x1
+                        
+                        # - Mensaje extendido con tiempo de procesamiento
+                        print(f"[PLACA] {text} | Área: {roi_area} px² | X inicial: {x_position} | Tiempo detección a OCR: {full_time_ms} ms | Res: {frame_ld.shape[1]}x{frame_ld.shape[0]}")
+                        
+                        # 6) Guardar snapshot en disco para debug
+                        timestamp_ms = int(time.time() * 1000)
+                        # - Guardar ROI
+                        filename = f"stream_{timestamp_ms}_{pid}_{text}_ROI.jpg"
+                        cv2.imwrite(os.path.join(debug_dir, filename), crop)
+                        # - Guardar frame completo
+                        full_frame_filename = f"stream_{timestamp_ms}_{pid}_{text}.jpg"
+                        cv2.imwrite(os.path.join(debug_dir, full_frame_filename), frame_ld.copy())
+                        
+                        # 7) Envío de resultados al backend
+                        if is_offline:
+                            hd_snap = frame_ld.copy()
+                            executor.submit(send_plate_async, crop, hd_snap, text, "", inst.bbox)
+                            send_backend(text, crop)
+                        else:
+                            # En modo online intentamos obtener un snapshot HD
+                            try:
+                                _, hd_snap = snapshot_manager.request_update_future(pid).result(timeout=3)
+                                if hd_snap is not None:
+                                    executor.submit(send_plate_async, crop, hd_snap, text, "", inst.bbox)
+                                    send_backend(text, crop)
+                                else:
+                                    # Fallback a frame LD
+                                    executor.submit(send_plate_async, crop, frame_ld.copy(), text, "", inst.bbox)
+                                    send_backend(text, crop)
+                            except Exception as e:
+                                logging.warning(f"Error obteniendo snapshot para envío: {e}, usando frame LD")
+                                # Fallback a frame LD
+                                executor.submit(send_plate_async, crop, frame_ld.copy(), text, "", inst.bbox)
+                                send_backend(text, crop)
                 except Exception as e:
                     logging.warning(f"[2.7] OCR stream error placa {pid}: {e}")
 

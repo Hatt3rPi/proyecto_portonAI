@@ -152,5 +152,5 @@ OCR_STREAM_ZONE = {
 # ACTIVACIÓN DE MODALIDADES OCR
 # ---------------------------------------------------------------------
 OCR_STREAM_ACTIVATED = True    # Activar/desactivar OCR en tiempo real
-OCR_SNAPSHOT_ACTIVATED = True  # Activar/desactivar OCR mediante snapshot HD
+OCR_SNAPSHOT_ACTIVATED = False  # Activar/desactivar OCR mediante snapshot HD
 OCR_OPENAI_ACTIVATED = False   # Activar/desactivar uso de OpenAI para OCR

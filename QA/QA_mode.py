@@ -134,7 +134,7 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
     expected_str = ", ".join(expected_plates)
 
     # Línea de estado en curso (antes de procesar)
-    print(f"[QA] {fname} | Esperada: {expected_str} | Detectadas:        | ⏳ | Área:        px² | X:      | Tiempo:       ", end="\r")
+    print(f"[QA] {fname} | Esperada: {expected_str} | Detectadas:        | ⏳ | Área:        px² | X:      | Tiempo:       | Res:         ", end="\r")
     sys.stdout.flush()
 
     try:
@@ -152,6 +152,7 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
         roi_area = None
         roi_x = None
         process_time = None
+        resolution = None
 
         for line in output.splitlines():
             if line.strip().startswith("[PLACA]"):
@@ -166,6 +167,8 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
                         roi_x = int(part.replace("X inicial:", "").strip())
                     if "Tiempo detección a OCR:" in part:
                         process_time = int(part.replace("Tiempo detección a OCR:", "").replace("ms", "").strip())
+                    if "Res:" in part:
+                        resolution = part.replace("Res:", "").strip()
 
         # Comparar resultados
         success = [p for p in expected_plates if p in detected_plates]
@@ -179,6 +182,9 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
         # Formatear tiempo de procesamiento
         process_time_str = f"{process_time:>5} ms" if process_time is not None else "  N/A  "
 
+        # Formatear resolución
+        resolution_str = f"{resolution:>9}" if resolution is not None else "  N/A     "
+
         # Símbolo de estado
         if success:
             simbolo = "🟢"
@@ -191,7 +197,7 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
 
         # Mostrar resultado final de este video
         print(" " * 150, end="\r")  # Limpiar línea anterior
-        print(f"[QA] {fname} | Esperada: {expected_str} | Detectadas: {detected_str} | {simbolo} | Área: {roi_area} px² | X: {roi_x} | Tiempo: {process_time_str}")
+        print(f"[QA] {fname} | Esperada: {expected_str} | Detectadas: {detected_str} | {simbolo} | Área: {roi_area} px² | X: {roi_x} | Tiempo: {process_time_str} | Res: {resolution_str}")
         sys.stdout.flush()
 
         results[fname] = {
@@ -203,9 +209,10 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
             "success": success,
             "failed": failed,
             "success_rate": rate,
-            "roi_area": roi_area,
-            "roi_x": roi_x,
-            "process_time": process_time
+            "roi_area": roi_area.strip() if isinstance(roi_area, str) else roi_area,
+            "roi_x": roi_x.strip() if isinstance(roi_x, str) else roi_x,
+            "process_time": process_time,
+            "resolution": resolution
         }
 
     except subprocess.CalledProcessError as e:
@@ -221,7 +228,8 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
             "success_rate": 0.0,
             "roi_area": None,
             "roi_x": None,
-            "process_time": None
+            "process_time": None,
+            "resolution": None
         }
 
 # --- Resumen global ---
@@ -284,6 +292,28 @@ def print_group_stats(field, title):
 print_group_stats('direccion',   'Dirección')
 print_group_stats('marcha',      'Marcha')
 print_group_stats('iluminacion', 'Iluminación')
+
+# Estadísticas por resolución
+print("\n=== Estadísticas por Resolución ===")
+res_stats = defaultdict(lambda: {'expected': 0, 'success': 0, 'times': [], 'areas': []})
+for info in results.values():
+    if info.get('resolution'):
+        res = info['resolution']
+        res_stats[res]['expected'] += len(info['expected'])
+        res_stats[res]['success'] += len(info['success'])
+        if info.get('process_time') is not None:
+            res_stats[res]['times'].append(info['process_time'])
+        if info.get('roi_area') is not None and not isinstance(info['roi_area'], str):
+            res_stats[res]['areas'].append(info['roi_area'])
+
+print(f"{'Resolución':12} {'Total':5} {'Detectado':9} {'Tasa%':6} {'TiempoAvg(ms)':14} {'ÁreaAvg(px²)':12}")
+for res, stats in res_stats.items():
+    tot  = stats['expected']
+    succ = stats['success']
+    rate = (succ / tot * 100) if tot else 0.0
+    avgt = (sum(stats['times']) / len(stats['times'])) if stats['times'] else 0.0
+    avga = (sum(stats['areas']) / len(stats['areas'])) if stats['areas'] else 0.0
+    print(f"{res:12} {tot:5} {succ:9} {rate:6.2f}% {avgt:14.2f} {avga:12.2f}")
 
 # --- Guardar resultados en JSON ---
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
