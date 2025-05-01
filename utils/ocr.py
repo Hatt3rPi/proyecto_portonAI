@@ -12,7 +12,8 @@ import cv2
 from config import (
     CONSENSUS_MIN_LENGTH,
     CONSENSUS_EXPECTED_LENGTH_METHOD,
-    CONSENSUS_FIXED_LENGTH
+    CONSENSUS_FIXED_LENGTH,
+    OCR_OPENAI_ACTIVATED
 )
 
 
@@ -290,7 +291,24 @@ class OCRProcessor:
         ocr_out = self.model_ocr.predict(plate_img, device='cuda:0', verbose=False)
         res = process_ocr_result_detailed(ocr_out, self.names)
         text = res.get('ocr_text', '').strip()
+        confidence = res.get('confidence', 0.0)
         if len(text) >= CONSENSUS_MIN_LENGTH and is_valid_plate(text):
-            return {"ocr_text": text, "confidence": res.get('confidence', 0.0)}
+            return {"ocr_text": text, "confidence": confidence}
         logging.debug(f"OCR tradicional descarta '{text}' inválido")
-        return {"ocr_text": "", "confidence": 0.0}
+
+        # Si está habilitado OpenAI y la confianza es baja, intentar con OpenAI
+        if OCR_OPENAI_ACTIVATED and use_openai and confidence < 0.8:
+            try:
+                from scripts.monitoreo_patentes.openai_plate_reader import read_plate_openai
+                text = read_plate_openai(plate_img, None) or ""
+                if len(text) >= CONSENSUS_MIN_LENGTH and is_valid_plate(text):
+                    return {"ocr_text": text, "confidence": 100.0}
+                logging.debug(f"OCR OpenAI descarta '{text}' inválido")
+            except Exception as e:
+                logging.warning(f"Error procesando con OpenAI: {e}")
+        
+        return {
+            "ocr_text": text,
+            "confidence": confidence,
+            "raw_output": res
+        }

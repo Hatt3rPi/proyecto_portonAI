@@ -21,7 +21,8 @@ from concurrent.futures import ThreadPoolExecutor
 from config import (
     DEBUG_MODE, ONLINE_MODE, URL_HD, CONFIANZA_PATENTE,
     FPS_DEQUE_MAXLEN, UMBRAL_SNAPSHOT_AREA,
-    NIGHT_THRESHOLD, DAY_THRESHOLD, OCR_STREAM_ZONE
+    NIGHT_THRESHOLD, DAY_THRESHOLD, OCR_STREAM_ZONE,
+    OCR_STREAM_ACTIVATED, OCR_SNAPSHOT_ACTIVATED, OCR_OPENAI_ACTIVATED
 )
 from models import ModelManager
 
@@ -89,6 +90,115 @@ def is_in_ocr_stream_zone(bbox, frame_shape, zone_def):
 
     return (x1 >= start_x and x2 <= end_x and
             y1 >= start_y and y2 <= end_y)
+
+# Función para snapshot y OCR avanzado en background
+def schedule_snapshot_and_ocr(plate_id, inst):
+    try:
+        # Validar si OCR snapshot está activado
+        if not OCR_SNAPSHOT_ACTIVATED:
+            logging.debug(f"OCR Snapshot desactivado, omitiendo procesamiento para {plate_id}")
+            return
+
+        # Verificar si está en zona OCR 
+        if not is_in_ocr_stream_zone(inst.bbox, frame_ld.shape, OCR_STREAM_ZONE):
+            logging.debug(f"Placa {plate_id} fuera de zona OCR, cancelando procesamiento")
+            return
+
+        # 1) Obtener snapshot HD
+        if is_offline:
+            hd_snap = frame_ld.copy()
+        else:
+            _, hd_snap = snapshot_manager.request_update_future(plate_id).result(timeout=5)
+
+        # 2) Refinar detección en HD
+        hd_resized, sx, sy = resize_for_inference(hd_snap, max_dim=640)
+        refined = model_plate.predict(hd_resized, device='cuda:0', verbose=False)
+        
+        # Usar la caja con mejor confianza que supere el umbral
+        boxes = [b for b in refined[0].boxes if float(b.conf[0]) * 100 >= CONFIANZA_PATENTE]
+        if not boxes:
+            logging.debug(f"No se encontraron placas válidas en el snapshot de {plate_id}")
+            return
+            
+        # Ordenar por confianza descendente
+        boxes.sort(key=lambda b: float(b.conf[0]), reverse=True)
+        box = boxes[0]  # Tomar la más confiable
+        
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        ox1, oy1 = int(x1 * sx), int(y1 * sy)
+        ox2, oy2 = int(x2 * sx), int(y2 * sy)
+        
+        # Verificar coordenadas
+        h_snap, w_snap = hd_snap.shape[:2]
+        ox1 = max(0, min(ox1, w_snap-1))
+        oy1 = max(0, min(oy1, h_snap-1))
+        ox2 = max(0, min(ox2, w_snap))
+        oy2 = max(0, min(oy2, h_snap))
+        
+        if ox2 <= ox1 or oy2 <= oy1:
+            logging.warning(f"ROI inválido en snapshot para placa {plate_id}: {(ox1,oy1,ox2,oy2)}")
+            return
+            
+        roi = hd_snap[oy1:oy2, ox1:ox2]
+        if roi.size == 0:
+            logging.warning(f"ROI vacío para placa {plate_id}")
+            return
+
+        # 3) Intentar OCR multiescala en el ROI
+        multiscale = ocr_processor.process_multiscale(roi)
+        best = apply_consensus_voting(multiscale, min_length=5)
+        if best is not None:
+            candidate_text = best.get("ocr_text", "").strip()
+            candidate_conf = best.get("average_conf", 0.0)
+        else:
+            candidate_text = ""
+            candidate_conf = 0.0
+
+        # 4) Fallback a OpenAI si hace falta y está habilitado
+        if OCR_OPENAI_ACTIVATED and not (candidate_text and is_valid_plate(candidate_text)):
+            result = ocr_processor.process_plate_image(roi, use_openai=True)
+            text = result.get("ocr_text", "").strip()
+            conf = result.get("confidence", 0.0)
+        else:
+            text = candidate_text
+            conf = candidate_conf
+
+        # 5) Validar y almacenar
+        if is_valid_plate(text):
+            inst.ocr_text = text
+            inst.ocr_status = 'completed'
+            inst.ocr_conf = conf
+            if inst.detected_at is not None:
+                full_time = time.time() - inst.detected_at
+                full_time_ms = int(full_time * 1000)
+            else:
+                full_time_ms = -1  # Por si algo falla, que sepas que es inválido
+
+            logging.info(f"Placa detectada y almacenada: {text}")
+            
+            # Datos del ROI
+            roi_area = (ox2 - ox1) * (oy2 - oy1)
+            x_position = ox1
+
+            # Mensaje extendido con tiempo de procesamiento
+            print(f"[PLACA] {text} | Área: {roi_area} px² | X inicial: {x_position} | Tiempo detección a OCR: {full_time_ms} ms")
+
+            # 6) Guardar snapshot en disco para debug
+            timestamp_ms = int(time.time() * 1000)
+            filename=f"fullframe_{timestamp_ms}_{plate_id}_{text}_ROI.jpg"
+            cv2.imwrite(os.path.join(debug_dir, filename), roi)
+            # Guardar frame completo en debug
+            full_frame_filename = f"fullframe_{timestamp_ms}_{plate_id}_{text}.jpg"
+            cv2.imwrite(os.path.join(debug_dir, full_frame_filename), hd_snap)
+
+            # 7) Envío de resultados
+            executor.submit(send_plate_async, roi, hd_snap, text, "", inst.bbox)
+            send_backend(text, roi)
+
+    except Exception as e:
+        logging.warning(f"Error snapshot async placa {plate_id}: {e}")
+    finally:
+        pending_jobs.discard(plate_id)
 
 def main(video_path=None):
     """
@@ -193,105 +303,6 @@ def main(video_path=None):
     # Ruta de debug para snapshots
     debug_dir = os.path.join(os.path.dirname(__file__), "debug")
     os.makedirs(debug_dir, exist_ok=True)
-
-    # Función para snapshot y OCR avanzado en background
-    def schedule_snapshot_and_ocr(plate_id, inst):
-        try:
-            # 1) Obtener snapshot HD
-            if is_offline:
-                hd_snap = frame_ld.copy()
-            else:
-                _, hd_snap = snapshot_manager.request_update_future(plate_id).result(timeout=5)
-
-            # 2) Refinar detección en HD
-            hd_resized, sx, sy = resize_for_inference(hd_snap, max_dim=640)
-            refined = model_plate.predict(hd_resized, device='cuda:0', verbose=False)
-            
-            # Usar la caja con mejor confianza que supere el umbral
-            boxes = [b for b in refined[0].boxes if float(b.conf[0]) * 100 >= CONFIANZA_PATENTE]
-            if not boxes:
-                logging.debug(f"No se encontraron placas válidas en el snapshot de {plate_id}")
-                return
-                
-            # Ordenar por confianza descendente
-            boxes.sort(key=lambda b: float(b.conf[0]), reverse=True)
-            box = boxes[0]  # Tomar la más confiable
-            
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            ox1, oy1 = int(x1 * sx), int(y1 * sy)
-            ox2, oy2 = int(x2 * sx), int(y2 * sy)
-            
-            # Verificar coordenadas
-            h_snap, w_snap = hd_snap.shape[:2]
-            ox1 = max(0, min(ox1, w_snap-1))
-            oy1 = max(0, min(oy1, h_snap-1))
-            ox2 = max(0, min(ox2, w_snap))
-            oy2 = max(0, min(oy2, h_snap))
-            
-            if ox2 <= ox1 or oy2 <= oy1:
-                logging.warning(f"ROI inválido en snapshot para placa {plate_id}: {(ox1,oy1,ox2,oy2)}")
-                return
-                
-            roi = hd_snap[oy1:oy2, ox1:ox2]
-            if roi.size == 0:
-                logging.warning(f"ROI vacío para placa {plate_id}")
-                return
-
-            # 3) Intentar OCR multiescala en el ROI
-            multiscale = ocr_processor.process_multiscale(roi)
-            best = apply_consensus_voting(multiscale, min_length=5)
-            if best is not None:
-                candidate_text = best.get("ocr_text", "").strip()
-                candidate_conf = best.get("average_conf", 0.0)
-            else:
-                candidate_text = ""
-                candidate_conf = 0.0
-
-            # 4) Fallback a OpenAI si hace falta
-            if not (candidate_text and is_valid_plate(candidate_text)):
-                result = ocr_processor.process_plate_image(roi, use_openai=True)
-                text = result.get("ocr_text", "").strip()
-                conf = result.get("confidence", 0.0)
-            else:
-                text = candidate_text
-                conf = candidate_conf
-
-            # 5) Validar y almacenar
-            if is_valid_plate(text):
-                inst.ocr_text = text
-                inst.ocr_status = 'completed'
-                inst.ocr_conf = conf
-                if inst.detected_at is not None:
-                    full_time = time.time() - inst.detected_at
-                    full_time_ms = int(full_time * 1000)
-                else:
-                    full_time_ms = -1  # Por si algo falla, que sepas que es inválido
-
-                logging.info(f"Placa detectada y almacenada: {text}")
-                
-                # Datos del ROI
-                roi_area = (ox2 - ox1) * (oy2 - oy1)
-                x_position = ox1
-
-                # Mensaje extendido con tiempo de procesamiento
-                print(f"[PLACA] {text} | Área: {roi_area} px² | X inicial: {x_position} | Tiempo detección a OCR: {full_time_ms} ms")
-
-                # 6) Guardar snapshot en disco para debug
-                timestamp_ms = int(time.time() * 1000)
-                filename=f"fullframe_{timestamp_ms}_{plate_id}_{text}_ROI.jpg"
-                cv2.imwrite(os.path.join(debug_dir, filename), roi)
-                # Guardar frame completo en debug
-                full_frame_filename = f"fullframe_{timestamp_ms}_{plate_id}_{text}.jpg"
-                cv2.imwrite(os.path.join(debug_dir, full_frame_filename), hd_snap)
-
-                # 7) Envío de resultados
-                executor.submit(send_plate_async, roi, hd_snap, text, "", inst.bbox)
-                send_backend(text, roi)
-
-        except Exception as e:
-            logging.warning(f"Error snapshot async placa {plate_id}: {e}")
-        finally:
-            pending_jobs.discard(plate_id)
 
     # -------------------
     # 2. BUCLE PRINCIPAL
@@ -435,6 +446,10 @@ def main(video_path=None):
 
             # 2.7 OCR en streaming para instancias pendientes
             for pid, inst in active_plates.items():
+                # Omitir procesamiento si OCR stream está desactivado
+                if not OCR_STREAM_ACTIVATED:
+                    continue
+                    
                 if inst.ocr_status != 'pending':
                     continue
                 
@@ -442,6 +457,7 @@ def main(video_path=None):
                 if not is_in_ocr_stream_zone(inst.bbox, frame_ld.shape, OCR_STREAM_ZONE):
                     continue
 
+                x1, y1, x2, y2 = inst.bbox
                 h_ld, w_ld = frame_ld.shape[:2]
                 x1 = max(0, min(x1, w_ld-1))
                 y1 = max(0, min(y1, h_ld-1))
@@ -465,25 +481,26 @@ def main(video_path=None):
                 except Exception as e:
                     logging.warning(f"[2.7] OCR stream error placa {pid}: {e}")
 
-            # # 2.8 Programar snapshot+OCR asíncrono para pendientes
-            # for pid, inst in active_plates.items():
-            #     if inst.ocr_status != 'pending' or pid in pending_jobs:
-            #         continue
+            # 2.8 Programar snapshot+OCR asíncrono para pendientes
+            if OCR_SNAPSHOT_ACTIVATED:  # Solo procesar si está habilitado
+                for pid, inst in active_plates.items():
+                    if inst.ocr_status != 'pending' or pid in pending_jobs:
+                        continue
 
-            #     x1, y1, x2, y2 = inst.bbox
-            #     if x2 <= x1 or y2 <= y1:
-            #         continue
-            #     w, h = x2 - x1, y2 - y1
+                    x1, y1, x2, y2 = inst.bbox
+                    if x2 <= x1 or y2 <= y1:
+                        continue
+                    w, h = x2 - x1, y2 - y1
 
-            #     # **Nuevo**: descartar fuera de zona OCR
-            #     if not is_in_ocr_stream_zone((x1, y1, x2, y2), frame_ld.shape, OCR_STREAM_ZONE):
-            #         #logging.debug(f"[2.8] Omitido snapshot fuera de zona OCR para {pid}: {inst.bbox}")
-            #         continue
+                    # **Verificar**: descartar fuera de zona OCR
+                    if not is_in_ocr_stream_zone((x1, y1, x2, y2), frame_ld.shape, OCR_STREAM_ZONE):
+                        #logging.debug(f"[2.8] Omitido snapshot fuera de zona OCR para {pid}: {inst.bbox}")
+                        continue
 
-            #     if w * h >= UMBRAL_SNAPSHOT_AREA:
-            #         logging.debug(f"[2.8] Snapshot async solicitado para {pid} con bbox={inst.bbox}")
-            #         pending_jobs.add(pid)
-            #         executor.submit(schedule_snapshot_and_ocr, pid, inst)
+                    if w * h >= UMBRAL_SNAPSHOT_AREA:
+                        logging.debug(f"[2.8] Snapshot async solicitado para {pid} con bbox={inst.bbox}")
+                        pending_jobs.add(pid)
+                        executor.submit(schedule_snapshot_and_ocr, pid, inst)
 
 
         except KeyboardInterrupt:

@@ -147,3 +147,10 @@ OCR_STREAM_ZONE = {
     "start_y_pct": 0.10,   # Desde el 10% del alto
     "end_y_pct": 0.85      # Hasta el 85% del alto (o zona de exclusión)
 }
+
+# ---------------------------------------------------------------------
+# ACTIVACIÓN DE MODALIDADES OCR
+# ---------------------------------------------------------------------
+OCR_STREAM_ACTIVATED = True    # Activar/desactivar OCR en tiempo real
+OCR_SNAPSHOT_ACTIVATED = True  # Activar/desactivar OCR mediante snapshot HD
+OCR_OPENAI_ACTIVATED = False   # Activar/desactivar uso de OpenAI para OCR
