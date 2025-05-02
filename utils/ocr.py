@@ -1,3 +1,4 @@
+## archivo: ocr.py
 """
 Módulo de procesamiento OCR y consenso para PortonAI
 Incluye la clase OCRProcessor y funciones auxiliares para validar placas.
@@ -13,7 +14,8 @@ from config import (
     CONSENSUS_MIN_LENGTH,
     CONSENSUS_EXPECTED_LENGTH_METHOD,
     CONSENSUS_FIXED_LENGTH,
-    OCR_OPENAI_ACTIVATED
+    OCR_OPENAI_ACTIVATED,
+    QA_ANALISIS_AVANZADO  # Añadimos la importación de esta variable
 )
 
 
@@ -256,14 +258,19 @@ class OCRProcessor:
             try:
                 fx = fy = scale / 100.0
                 roi = cv2.resize(plate_img, None, fx=fx, fy=fy)
-                logging.debug(f"[OCR-MULTIESCALA] Procesando escala {scale}% ({roi.shape[1]}x{roi.shape[0]})")
+                
+                # Solo mostrar logs detallados si QA_ANALISIS_AVANZADO está activo
+                if QA_ANALISIS_AVANZADO:
+                    logging.debug(f"[OCR-MULTIESCALA] Procesando escala {scale}% ({roi.shape[1]}x{roi.shape[0]})")
+                    
                 ocr_out = self.model_ocr.predict(roi, device='cuda:0', verbose=False)
                 proc = process_ocr_result_detailed(ocr_out, self.names)
                 text = proc.get('ocr_text', '').strip()
                 
-                # Siempre loguear el resultado para análisis posterior, no solo si hay texto
+                # Siempre loguear el resultado para análisis posterior, pero solo si QA_ANALISIS_AVANZADO está activo
                 valid = is_valid_plate(text)
-                logging.debug(f"[OCR-MULTIESCALA] Escala {scale}%: '{text}' válido={valid} conf={proc.get('confidence', 0):.1f}")
+                if QA_ANALISIS_AVANZADO:
+                    logging.debug(f"[OCR-MULTIESCALA] Escala {scale}%: '{text}' válido={valid} conf={proc.get('confidence', 0):.1f}")
                 
                 # Filtrar resultados inválidos como antes
                 if not text or not valid:
@@ -274,7 +281,10 @@ class OCRProcessor:
             except Exception as e:
                 logging.warning(f"Error OCR multiescala escala {scale}%: {e}")
         
-        logging.debug(f"[OCR-MULTIESCALA] Terminado con {len(results)}/{12} escalas generando texto válido")
+        # Solo mostrar logs de resumen si QA_ANALISIS_AVANZADO está activo
+        if QA_ANALISIS_AVANZADO:
+            logging.debug(f"[OCR-MULTIESCALA] Terminado con {len(results)}/{12} escalas generando texto válido")
+        
         return results
 
     def process_plate_image(

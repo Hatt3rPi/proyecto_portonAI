@@ -1,3 +1,4 @@
+## archivo: main.py
 #!/usr/bin/env python
 """
 Sistema PortonAI - Detección y reconocimiento de patentes vehiculares

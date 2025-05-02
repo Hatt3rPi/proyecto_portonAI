@@ -1,3 +1,4 @@
+## archivo: QA_mode.py
 #!/usr/bin/env python
 """
 QA_mode.py - Modo de validación automática de detección de placas en PortonAI
@@ -15,6 +16,35 @@ import time
 import re
 from datetime import datetime
 from collections import defaultdict
+
+# Añadir directorio padre al path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# --- Importaciones para análisis avanzado ---
+import numpy as np
+try:
+    from config import (
+        QA_ANALISIS_AVANZADO,
+        QA_ANGULOS_VARIACION,
+        QA_ESCALAS_VARIACION
+    )
+except ImportError:
+    print("[WARN] No se pudo importar configuración de análisis avanzado, usando valores por defecto.")
+
+# Importar análisis avanzado condicionalmente
+if QA_ANALISIS_AVANZADO:
+    try:
+        from QA.analisis_avanzado import (
+            generar_mapa_calor,
+            generar_mapa_calor_agregado,
+        )
+        # Importar el procesador OCR para análisis avanzado
+        from models import ModelManager
+        from utils.ocr import OCRProcessor
+    except ImportError as e:
+        print(f"[ERROR] No se pudieron importar módulos necesarios para análisis avanzado: {e}")
+        print("[WARN] Desactivando análisis avanzado")
+        QA_ANALISIS_AVANZADO = False
 
 # --- Configuración de rutas ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -160,6 +190,18 @@ results = {}
 
 print("\n=== Iniciando procesamiento de videos QA ===\n")
 
+# Inicializar modelos OCR si se activa el análisis avanzado
+if QA_ANALISIS_AVANZADO:
+    print("Modo de análisis avanzado activado. Inicializando modelos...")
+    manager = ModelManager()
+    model_ocr = manager.get_ocr_model()
+    ocr_processor = OCRProcessor(model_ocr, manager.get_ocr_names())
+    resultados_analisis_avanzado = []
+    
+    # Crear directorio para mapas de calor
+    mapas_calor_dir = os.path.join(RESULTADOS_DIR, f"mapas_calor_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    os.makedirs(mapas_calor_dir, exist_ok=True)
+
 for fname in sorted(os.listdir(VIDEOS_DIR)):
     if not fname.lower().endswith(".dav"):
         continue
@@ -267,6 +309,35 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
             "ocr_analysis": ocr_analysis if ocr_analysis else None,
             "has_match_in_scales": any(entry["texto"] == expected_plates[0] for entry in (ocr_analysis or []))
         }
+
+        # Análisis avanzado si está activado y tenemos placa esperada válida
+        if QA_ANALISIS_AVANZADO and expected_plates and expected_plates[0] != "TBC":
+            print(f"\n[QA-AVANZADO] Iniciando análisis avanzado para {short_fname}...")
+            
+            # Obtener parámetros de variación
+            rango_angulos = QA_ANGULOS_VARIACION[0]
+            paso_angulo = QA_ANGULOS_VARIACION[1]
+            min_escala, max_escala, paso_escala = QA_ESCALAS_VARIACION
+            
+            # Generar mapa de calor
+            resultado_analisis = generar_mapa_calor(
+                video_path,
+                expected_plates[0],
+                ocr_processor,
+                rango_angulos,
+                paso_angulo,
+                min_escala,
+                max_escala,
+                paso_escala,
+                mapas_calor_dir,
+                fname
+            )
+            
+            if resultado_analisis:
+                resultados_analisis_avanzado.append(resultado_analisis)
+                print(f"[QA-AVANZADO] Análisis completado para {short_fname}")
+            else:
+                print(f"[QA-AVANZADO] No se pudo completar el análisis para {short_fname}")
 
     except subprocess.CalledProcessError as e:
         print(f"\n[ERROR] Fallo procesando {fname}: {e}")
@@ -440,3 +511,9 @@ if missed_opportunities_count > 0:
 
 print(f"\n[QA] Resultados completos guardados en {output_path}")
 print(f"[QA] Análisis detallado de consenso guardado en {consensus_analysis_file}")
+
+# Generar mapa de calor agregado si hay suficientes resultados
+if QA_ANALISIS_AVANZADO and resultados_analisis_avanzado:
+    print(f"\n=== Generando mapa de calor agregado con {len(resultados_analisis_avanzado)} videos ===")
+    generar_mapa_calor_agregado(resultados_analisis_avanzado, mapas_calor_dir)
+    print(f"[QA-AVANZADO] Mapas de calor y parámetros óptimos guardados en {mapas_calor_dir}")

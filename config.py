@@ -1,3 +1,4 @@
+## archivo: config.py
 #!/usr/bin/env python
 
 """
@@ -154,3 +155,10 @@ OCR_STREAM_ZONE = {
 OCR_STREAM_ACTIVATED = True    # Activar/desactivar OCR en tiempo real
 OCR_SNAPSHOT_ACTIVATED = False  # Activar/desactivar OCR mediante snapshot HD
 OCR_OPENAI_ACTIVATED = False   # Activar/desactivar uso de OpenAI para OCR
+
+# ---------------------------------------------------------------------
+# CONFIGURACIÓN DE ANÁLISIS QA AVANZADO
+# ---------------------------------------------------------------------
+QA_ANALISIS_AVANZADO = False  # Activar/desactivar análisis avanzado en QA_mode
+QA_ANGULOS_VARIACION = ((-5, 10), 0.5)  # (rango_ángulos, paso) en grados
+QA_ESCALAS_VARIACION = (50, 150, 5)  # (min, max, paso) en porcentaje

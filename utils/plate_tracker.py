@@ -1,3 +1,4 @@
+## archivo: plate_tracker.py
 """
 Módulo para el seguimiento de placas vehiculares usando un enfoque híbrido
 que combina IoU para asociación entre frames y trackers de OpenCV para
@@ -144,7 +145,7 @@ class PlateTrackerManager:
         self.exclude_footer = exclude_footer
         self.footer_ratio = footer_ratio
         self.known_invalid_words = ['CUSTOMWARE', 'CUSTOM', 'WARE', 'CUSTOMW']
-        self.experimental_mode = True  # Habilitar experimentación con deskewing
+        self.experimental_mode = False  # Habilitar experimentación con deskewing
         self.deskew_success_rate = 0
         self.deskew_attempt_count = 0
         
