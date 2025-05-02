@@ -83,6 +83,33 @@ def is_in_exclusion_zone(bbox, frame_shape, exclude_ratio=0.85):
     # Una detección está en la zona de exclusión si su centro está por debajo del umbral
     return center_y > footer_start_y
 
+# ================== START TRACKING UTILS ==================
+# Nuevos parámetros de tracking
+MAX_MISSED = 10           # frames permitidos sin detección antes de eliminar
+MAX_AGE = 200             # frames máximos de vida de un tracker
+OVERLAP_THRESHOLD = 0.3   # IoU umbral para considerar solapamiento
+
+def filter_overlapping_by_size(instances, overlap_thresh=OVERLAP_THRESHOLD):
+    """
+    Dado un listado de PlateTrackInstance, mantiene solo la instancia
+    con mayor área en cada grupo que se solape por encima de overlap_thresh.
+    """
+    # Orden descendente por área (x2-x1)*(y2-y1)
+    sorted_insts = sorted(
+        instances,
+        key=lambda inst: (inst.bbox[2]-inst.bbox[0])*(inst.bbox[3]-inst.bbox[1]),
+        reverse=True
+    )
+    filtered = []
+    for inst in sorted_insts:
+        if not any(
+            calculate_iou(inst.bbox, kept.bbox) > overlap_thresh
+            for kept in filtered
+        ):
+            filtered.append(inst)
+    return filtered
+# =================== END TRACKING UTILS ===================
+
 class PlateTrackerManager:
     """
     Administrador de trackers para placas vehiculares usando un enfoque híbrido.
@@ -196,12 +223,16 @@ class PlateTrackerManager:
         self.frame_count += 1
         frame_shape = frame.shape
         
-        
         # 1) Filtrar detecciones inválidas (footer, tamaño, aspecto…)
         valid_detections = []
-        for det in detections:
+        for i, det in enumerate(detections):
             if self._is_valid_detection(det, frame_shape):
                 valid_detections.append(det)
+            else:
+                logging.debug(f"[TRACKER] Detección {i} descartada: {det}")
+        
+        logging.debug(f"[TRACKER] Frame {self.frame_count}: {len(valid_detections)}/{len(detections)} detecciones válidas")
+        
         # Reemplazamos detections por las válidas
         detections = valid_detections
 
@@ -214,9 +245,10 @@ class PlateTrackerManager:
                 unique_dets.append(det)
         detections = unique_dets
 
-        
         # 3. Actualizar trackers existentes
+        active_before = len(self.active_instances)
         for track_id, instance in list(self.active_instances.items()):
+            old_bbox = instance.bbox
             if instance.tracker:
                 success, box = instance.tracker.update(frame)
                 if success:
@@ -229,12 +261,29 @@ class PlateTrackerManager:
                     ):
                         instance.bbox = (x1, y1, x2, y2)
                         instance.frame_count += 1
+                        
+                        # Loguear cambio de posición significativo
+                        if old_bbox != instance.bbox:
+                            dx = x1 - old_bbox[0]
+                            dy = y1 - old_bbox[1]
+                            logging.debug(f"[TRACKER] {track_id} movimiento: {old_bbox} -> {instance.bbox} (dx={dx}, dy={dy})")
                     else:
                         success = False
+                        logging.debug(f"[TRACKER] {track_id} tracker fuera de límites o en exclusión: {(x1, y1, x2, y2)}")
                 
                 if not success:
                     instance.missed_count += 1
-        
+                    logging.debug(f"[TRACKER] {track_id} missed={instance.missed_count}/{self.max_missed}")
+
+        # 3.5 Filtrar solapamientos: mantener solo ROI de mayor tamaño
+        filtered = filter_overlapping_by_size(list(self.active_instances.values()))
+        self.active_instances = {inst.tracker_id: inst for inst in filtered}
+
+        # 3.6 Eliminar trackers por edad
+        for t_id in list(self.active_instances.keys()):
+            if self.active_instances[t_id].frame_count > MAX_AGE:
+                del self.active_instances[t_id]
+
         # 4. Asociación IoU entre detecciones y trackers existentes
         matched_tracks = set()
         matched_detections = set()
@@ -336,6 +385,8 @@ class PlateTrackerManager:
         # Para cada grupo, mantener solo la instancia con más detecciones o mayor confianza
         for ocr_text, track_ids in ocr_groups.items():
             if len(track_ids) > 1:
+                logging.debug(f"[DEDUP] Encontrados {len(track_ids)} trackers con texto '{ocr_text}': {track_ids}")
+                
                 # Ordenar por número de detecciones y luego por confianza
                 sorted_ids = sorted(track_ids, 
                                    key=lambda tid: (
@@ -346,7 +397,7 @@ class PlateTrackerManager:
                 # Mantener el mejor, eliminar los demás
                 best_id = sorted_ids[0]
                 for track_id in sorted_ids[1:]:
-                    logging.debug(f"Deduplicando: eliminando {track_id}, manteniendo {best_id} para placa '{ocr_text}'")
+                    logging.debug(f"[DEDUP] Eliminando {track_id}, manteniendo {best_id} para placa '{ocr_text}'")
                     del self.active_instances[track_id]
     
     def _filter_invalid_ocr_text(self):

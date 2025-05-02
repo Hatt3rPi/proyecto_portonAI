@@ -100,7 +100,10 @@ def schedule_snapshot_and_ocr(plate_id, inst):
             return
 
         # Verificar si está en zona OCR 
-        if not is_in_ocr_stream_zone(inst.bbox, frame_ld.shape, OCR_STREAM_ZONE):
+        inside_zone = is_in_ocr_stream_zone(inst.bbox, frame_ld.shape, OCR_STREAM_ZONE)
+        logging.debug(f"[SNAPSHOT-OCR] Instancia {plate_id} bbox={inst.bbox} inside_zone={inside_zone}")
+        
+        if not inside_zone:
             logging.debug(f"Placa {plate_id} fuera de zona OCR, cancelando procesamiento")
             return
 
@@ -145,7 +148,7 @@ def schedule_snapshot_and_ocr(plate_id, inst):
             return
 
         # 3) Intentar OCR multiescala en el ROI
-        multiscale = ocr_processor.process_multiscale(roi)
+        multiscale = ocr_processor.process_multiescala(roi)
         best = apply_consensus_voting(multiscale, min_length=5)
         if best is not None:
             candidate_text = best.get("ocr_text", "").strip()
@@ -451,10 +454,14 @@ def main(video_path=None):
                     continue
                     
                 if inst.ocr_status != 'pending':
+                    logging.debug(f"[OCR-STREAM] Instancia {pid} omitida, estado={inst.ocr_status}")
                     continue
                 
                 # Validar que bbox esté completamente dentro de la zona de OCR Stream
-                if not is_in_ocr_stream_zone(inst.bbox, frame_ld.shape, OCR_STREAM_ZONE):
+                inside_zone = is_in_ocr_stream_zone(inst.bbox, frame_ld.shape, OCR_STREAM_ZONE)
+                logging.debug(f"[OCR-STREAM] Instancia {pid} bbox={inst.bbox} inside_zone={inside_zone}")
+                
+                if not inside_zone:
                     continue
 
                 x1, y1, x2, y2 = inst.bbox
@@ -464,15 +471,22 @@ def main(video_path=None):
                 x2 = max(0, min(x2, w_ld))
                 y2 = max(0, min(y2, h_ld))
                 if x2 <= x1 or y2 <= y1:
-                    logging.warning(f"[2.7]  ROI inválido para OCR en placa {pid}: {(x1,y1,x2,y2)}")
+                    logging.warning(f"[2.7] ROI inválido para OCR en placa {pid}: {(x1,y1,x2,y2)}")
                     continue
                 crop = frame_ld[y1:y2, x1:x2]
                 try:
-                    multiscale = ocr_processor.process_multiscale(crop)
+                    logging.debug(f"[OCR-STREAM] Iniciando OCR multiescala para {pid}, ROI={crop.shape}")
+                    multiscale = ocr_processor.process_multiescala(crop)
                     best = apply_consensus_voting(multiscale, min_length=5)
                     if best is None and multiscale:
                         best = max(multiscale, key=lambda r: r["confidence"])
                     text = (best or {}).get("ocr_text","").strip()
+                    
+                    if text:
+                        logging.debug(f"[OCR-STREAM] Instancia {pid} resultado OCR: '{text}' válido={is_valid_plate(text)}")
+                    else:
+                        logging.debug(f"[OCR-STREAM] Instancia {pid} sin texto OCR detectado")
+                    
                     if text and is_valid_plate(text):
                         inst.ocr_stream = best
                         inst.ocr_text   = text
@@ -532,6 +546,10 @@ def main(video_path=None):
             if OCR_SNAPSHOT_ACTIVATED:  # Solo procesar si está habilitado
                 for pid, inst in active_plates.items():
                     if inst.ocr_status != 'pending' or pid in pending_jobs:
+                        if inst.ocr_status != 'pending':
+                            logging.debug(f"[SNAPSHOT] Instancia {pid} omitida, estado={inst.ocr_status}")
+                        elif pid in pending_jobs:
+                            logging.debug(f"[SNAPSHOT] Instancia {pid} omitida, ya en cola de procesamiento")
                         continue
 
                     x1, y1, x2, y2 = inst.bbox
@@ -540,14 +558,19 @@ def main(video_path=None):
                     w, h = x2 - x1, y2 - y1
 
                     # **Verificar**: descartar fuera de zona OCR
-                    if not is_in_ocr_stream_zone((x1, y1, x2, y2), frame_ld.shape, OCR_STREAM_ZONE):
-                        #logging.debug(f"[2.8] Omitido snapshot fuera de zona OCR para {pid}: {inst.bbox}")
+                    inside_zone = is_in_ocr_stream_zone((x1, y1, x2, y2), frame_ld.shape, OCR_STREAM_ZONE)
+                    logging.debug(f"[SNAPSHOT] Instancia {pid} bbox={(x1,y1,x2,y2)} área={w*h} inside_zone={inside_zone}")
+                    
+                    if not inside_zone:
+                        logging.debug(f"[SNAPSHOT] Omitido snapshot fuera de zona OCR para {pid}: {inst.bbox}")
                         continue
 
                     if w * h >= UMBRAL_SNAPSHOT_AREA:
                         logging.debug(f"[2.8] Snapshot async solicitado para {pid} con bbox={inst.bbox}")
                         pending_jobs.add(pid)
                         executor.submit(schedule_snapshot_and_ocr, pid, inst)
+                    else:
+                        logging.debug(f"[SNAPSHOT] Instancia {pid} omitida, área {w*h} < umbral {UMBRAL_SNAPSHOT_AREA}")
 
 
         except KeyboardInterrupt:

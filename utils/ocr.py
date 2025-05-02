@@ -256,9 +256,14 @@ class OCRProcessor:
             try:
                 fx = fy = scale / 100.0
                 roi = cv2.resize(plate_img, None, fx=fx, fy=fy)
+                logging.debug(f"[OCR-MULTIESCALA] Procesando escala {scale}% ({roi.shape[1]}x{roi.shape[0]})")
                 ocr_out = self.model_ocr.predict(roi, device='cuda:0', verbose=False)
                 proc = process_ocr_result_detailed(ocr_out, self.names)
                 text = proc.get('ocr_text', '').strip()
+                
+                if text:
+                    logging.debug(f"[OCR-MULTIESCALA] Escala {scale}%: '{text}' válido={is_valid_plate(text)} conf={proc.get('confidence', 0):.1f}")
+                
                 if not text or not is_valid_plate(text):
                     #logging.debug(f"OCR multiescala descarta '{text}' inválido a escala {scale}%")
                     continue
@@ -266,6 +271,8 @@ class OCRProcessor:
                 results.append(proc)
             except Exception as e:
                 logging.warning(f"Error OCR multiescala escala {scale}%: {e}")
+        
+        logging.debug(f"[OCR-MULTIESCALA] Terminado con {len(results)}/{12} escalas generando texto válido")
         return results
 
     def process_plate_image(
