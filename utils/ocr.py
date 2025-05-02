@@ -239,6 +239,12 @@ class OCRProcessor:
     def __init__(self, model_ocr, model_ocr_names):
         self.model_ocr = model_ocr
         self.names     = model_ocr_names
+        # Para guardar los callbacks de progreso
+        self.progress_callback = None
+
+    def set_progress_callback(self, callback):
+        """Establece un callback para reportar progreso"""
+        self.progress_callback = callback
 
     def process_multiscale(self, plate_img: Any) -> List[Dict[str, Any]]:
         """
@@ -254,23 +260,38 @@ class OCRProcessor:
             logging.warning("OCR multiescala omitido: ROI vacío")
             return []
         results = []
+        total_scales = 12  # Del 50% al 100% en pasos de 5%
+        current_scale = 0
+        
         for scale in range(50, 105, 5):
+            current_scale += 1
+            # Llamar al callback de progreso si existe
+            if self.progress_callback:
+                self.progress_callback(current_scale, total_scales)
+                
             try:
                 fx = fy = scale / 100.0
                 roi = cv2.resize(plate_img, None, fx=fx, fy=fy)
                 
+                # Crear un logger específico para los mensajes de OCR-MULTIESCALA
+                # que se dirigirá solo a archivo, no a consola
+                ocr_logger = logging.getLogger("ocr_multiescala_logger")
+                ocr_logger.setLevel(logging.DEBUG)
+                # Usar propagate=False para evitar que los mensajes vayan al logger raíz
+                ocr_logger.propagate = False
+                
                 # Solo mostrar logs detallados si QA_ANALISIS_AVANZADO está activo
                 if QA_ANALISIS_AVANZADO:
-                    logging.debug(f"[OCR-MULTIESCALA] Procesando escala {scale}% ({roi.shape[1]}x{roi.shape[0]})")
+                    ocr_logger.debug(f"[OCR-MULTIESCALA] Procesando escala {scale}% ({roi.shape[1]}x{roi.shape[0]})")
                     
                 ocr_out = self.model_ocr.predict(roi, device='cuda:0', verbose=False)
                 proc = process_ocr_result_detailed(ocr_out, self.names)
                 text = proc.get('ocr_text', '').strip()
                 
-                # Siempre loguear el resultado para análisis posterior, pero solo si QA_ANALISIS_AVANZADO está activo
+                # Siempre loguear el resultado para análisis posterior, pero solo con el logger específico
                 valid = is_valid_plate(text)
                 if QA_ANALISIS_AVANZADO:
-                    logging.debug(f"[OCR-MULTIESCALA] Escala {scale}%: '{text}' válido={valid} conf={proc.get('confidence', 0):.1f}")
+                    ocr_logger.debug(f"[OCR-MULTIESCALA] Escala {scale}%: '{text}' válido={valid} conf={proc.get('confidence', 0):.1f}")
                 
                 # Filtrar resultados inválidos como antes
                 if not text or not valid:
@@ -281,9 +302,10 @@ class OCRProcessor:
             except Exception as e:
                 logging.warning(f"Error OCR multiescala escala {scale}%: {e}")
         
-        # Solo mostrar logs de resumen si QA_ANALISIS_AVANZADO está activo
+        # Solo mostrar logs de resumen con el logger específico
         if QA_ANALISIS_AVANZADO:
-            logging.debug(f"[OCR-MULTIESCALA] Terminado con {len(results)}/{12} escalas generando texto válido")
+            ocr_logger = logging.getLogger("ocr_multiescala_logger")
+            ocr_logger.debug(f"[OCR-MULTIESCALA] Terminado con {len(results)}/{total_scales} escalas generando texto válido")
         
         return results
 

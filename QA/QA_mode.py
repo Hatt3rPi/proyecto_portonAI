@@ -22,14 +22,41 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # --- Importaciones para análisis avanzado ---
 import numpy as np
+import logging
+
+# Configurar el manejo de logging cuando QA_ANALISIS_AVANZADO está activo
+# para evitar que los mensajes de OCR-MULTIESCALA aparezcan en la consola
 try:
     from config import (
         QA_ANALISIS_AVANZADO,
         QA_ANGULOS_VARIACION,
         QA_ESCALAS_VARIACION
     )
+    
+    # Si el análisis avanzado está activado, configurar el logger para filtrar mensajes OCR-MULTIESCALA
+    if QA_ANALISIS_AVANZADO:
+        # Crear un filtro personalizado para eliminar los mensajes OCR-MULTIESCALA
+        class OcrMultiescalaFilter(logging.Filter):
+            def filter(self, record):
+                # Si el mensaje contiene [OCR-MULTIESCALA], no lo muestra en consola
+                return "[OCR-MULTIESCALA]" not in record.getMessage()
+                
+        # Aplicar el filtro a todos los handlers de tipo StreamHandler (consola)
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.StreamHandler):
+                handler.addFilter(OcrMultiescalaFilter())
+        
+        # Crear un handler específico para archivo si queremos guardar esos mensajes
+        file_handler = logging.FileHandler(os.path.join(os.path.dirname(__file__), "ocr_multiescala.log"))
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        logging.getLogger().addHandler(file_handler)
+        
 except ImportError:
     print("[WARN] No se pudo importar configuración de análisis avanzado, usando valores por defecto.")
+    QA_ANALISIS_AVANZADO = False
+    QA_ANGULOS_VARIACION = ((-5, 10), 0.5)
+    QA_ESCALAS_VARIACION = (50, 150, 5)
 
 # Importar análisis avanzado condicionalmente
 if QA_ANALISIS_AVANZADO:
@@ -220,7 +247,7 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
     short_fname = fname[-16:-4] if len(fname) > 16 else fname[:-4]
 
     # Línea de estado en curso (antes de procesar)
-    print(f"[QA] {short_fname} | Esperada: {expected_str} | Detectadas:        | ⏳ | Área:        px² | X:      | Tiempo:       | Res:         ", end="\r")
+    print(f"[QA] {short_fname} | Esperada: {expected_str} | Detectadas:        | ⏳ | Área:        px² | X:      | Tiempo:       | Res:         | Progreso: [          ] 0%", end="\r")
     sys.stdout.flush()
 
     try:
@@ -319,6 +346,20 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
             paso_angulo = QA_ANGULOS_VARIACION[1]
             min_escala, max_escala, paso_escala = QA_ESCALAS_VARIACION
             
+            # Calcular el total de iteraciones para la barra de progreso
+            n_angulos = len(np.arange(rango_angulos[0], rango_angulos[1] + paso_angulo, paso_angulo))
+            n_escalas = len(np.arange(min_escala, max_escala + paso_escala, paso_escala))
+            total_iter = n_angulos * n_escalas
+            
+            # Configurar un callback para actualizar la barra de progreso
+            def progress_callback(current_iter, total_iter):
+                percent = int(current_iter / total_iter * 100)
+                bar_length = 10
+                filled_len = int(bar_length * current_iter // total_iter)
+                bar = '█' * filled_len + ' ' * (bar_length - filled_len)
+                print(f"[QA-AVANZADO] Progreso: [{bar}] {percent}%", end="\r")
+                sys.stdout.flush()
+            
             # Generar mapa de calor
             resultado_analisis = generar_mapa_calor(
                 video_path,
@@ -335,9 +376,9 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
             
             if resultado_analisis:
                 resultados_analisis_avanzado.append(resultado_analisis)
-                print(f"[QA-AVANZADO] Análisis completado para {short_fname}")
+                print(f"\n[QA-AVANZADO] Análisis completado para {short_fname}            ")
             else:
-                print(f"[QA-AVANZADO] No se pudo completar el análisis para {short_fname}")
+                print(f"\n[QA-AVANZADO] No se pudo completar el análisis para {short_fname}")
 
     except subprocess.CalledProcessError as e:
         print(f"\n[ERROR] Fallo procesando {fname}: {e}")

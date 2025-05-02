@@ -534,10 +534,13 @@ def generar_mapa_calor(
     vmin = 0   # 0% similitud
     vmax = 100 # 100% similitud
     
+    # Usar colormap de rojo a verde (RdYlGn)
+    custom_cmap = 'RdYlGn'  # Red-Yellow-Green
+    
     # Mapa de calor para rotación
     plt.subplot(2, 1, 1)
     plt.title(f"Mapa de calor - Rotación (max: {max_sim_rot:.1f}%)")
-    im = plt.imshow(similitud_rotacion, cmap='hot', interpolation='nearest', 
+    im = plt.imshow(similitud_rotacion, cmap=custom_cmap, interpolation='nearest', 
                     origin='lower', aspect='auto', vmin=vmin, vmax=vmax)
     plt.colorbar(im, label="Similitud (%)")
     plt.xlabel("Escala (%)")
@@ -555,7 +558,7 @@ def generar_mapa_calor(
     # Mapa de calor para perspectiva
     plt.subplot(2, 1, 2)
     plt.title(f"Mapa de calor - Perspectiva (max: {max_sim_persp:.1f}%)")
-    im = plt.imshow(similitud_perspectiva, cmap='hot', interpolation='nearest', 
+    im = plt.imshow(similitud_perspectiva, cmap=custom_cmap, interpolation='nearest', 
                     origin='lower', aspect='auto', vmin=vmin, vmax=vmax)
     plt.colorbar(im, label="Similitud (%)")
     plt.xlabel("Escala (%)")
@@ -564,11 +567,6 @@ def generar_mapa_calor(
                escalas[::max(1, n_escalas//10)])
     plt.yticks(np.arange(n_angulos)[::max(1, n_angulos//10)], 
                angulos[::max(1, n_angulos//10)])
-    
-    # Marcar el mejor punto
-    best_i_persp = np.where(angulos == max_params_persp[0])[0][0]
-    best_j_persp = np.where(escalas == max_params_persp[1])[0][0]
-    plt.plot(best_j_persp, best_i_persp, 'wo', markersize=10)
     
     plt.tight_layout()
     plt.savefig(os.path.join(video_dir, f"{video_id}_mapa_calor.png"), dpi=300)
@@ -662,10 +660,13 @@ def generar_mapa_calor_agregado(resultados: List[Dict], output_dir: str):
     vmin = 0   # 0% similitud
     vmax = 100 # 100% similitud
     
+    # Usar colormap de rojo a verde (RdYlGn)
+    custom_cmap = 'RdYlGn'  # Red-Yellow-Green
+    
     # Mapa agregado para rotación
     plt.subplot(2, 1, 1)
     plt.title(f"Mapa de calor agregado - Rotación (max: {max_sim_rot:.1f}%)")
-    im = plt.imshow(sim_rot_avg, cmap='hot', interpolation='nearest', 
+    im = plt.imshow(sim_rot_avg, cmap=custom_cmap, interpolation='nearest', 
                     origin='lower', aspect='auto', vmin=vmin, vmax=vmax)
     plt.colorbar(im, label="Similitud promedio (%)")
     plt.xlabel("Escala (%)")
@@ -681,7 +682,7 @@ def generar_mapa_calor_agregado(resultados: List[Dict], output_dir: str):
     # Mapa agregado para perspectiva
     plt.subplot(2, 1, 2)
     plt.title(f"Mapa de calor agregado - Perspectiva (max: {max_sim_persp:.1f}%)")
-    im = plt.imshow(sim_persp_avg, cmap='hot', interpolation='nearest', 
+    im = plt.imshow(sim_persp_avg, cmap=custom_cmap, interpolation='nearest', 
                     origin='lower', aspect='auto', vmin=vmin, vmax=vmax)
     plt.colorbar(im, label="Similitud promedio (%)")
     plt.xlabel("Escala (%)")
@@ -690,9 +691,6 @@ def generar_mapa_calor_agregado(resultados: List[Dict], output_dir: str):
                escalas[::max(1, n_escalas//10)])
     plt.yticks(np.arange(n_angulos)[::max(1, n_angulos//10)], 
                angulos[::max(1, n_angulos//10)])
-    
-    # Marcar el mejor punto
-    plt.plot(max_idx_persp[1], max_idx_persp[0], 'wo', markersize=10)
     
     plt.tight_layout()
     timestamp = time.strftime("%Y%m%d-%H%M%S")
