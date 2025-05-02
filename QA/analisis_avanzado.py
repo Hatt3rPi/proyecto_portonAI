@@ -20,6 +20,12 @@ import math
 import re
 from difflib import SequenceMatcher
 
+# Desactivar todos los mensajes de debug de matplotlib
+matplotlib_logger = logging.getLogger('matplotlib')
+matplotlib_logger.setLevel(logging.WARNING)
+# Desactivar específicamente los mensajes de findfont
+logging.getLogger('matplotlib.font_manager').setLevel(logging.WARNING)
+
 # Añadir directorio principal al path para importar módulos del sistema principal
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -182,27 +188,22 @@ def ejecutar_main_para_extraer_roi(video_path: str) -> Tuple[np.ndarray, np.ndar
     env["QA_EXTRACT_MODE"] = "1"  # Variable para indicar modo de extracción
     env["QA_OUTPUT_DIR"] = temp_dir
     
-    print(f"Ejecutando main.py para extraer ROI de {os.path.basename(video_path)}...")
-    
     # Ejecutar el proceso main.py con los argumentos adecuados
     try:
         cmd = [sys.executable, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"), 
-               "--video_path", video_path, "--qa_extract"]
+               "--video_path", video_path]  # Ya no agregamos --qa_extract, usamos variables de entorno
         
-        process = subprocess.run(
-            cmd, 
-            capture_output=True, 
-            text=True, 
-            env=env,
-            timeout=60  # 60 segundos máximo para procesar
-        )
+        # Redireccionar stdout y stderr a /dev/null
+        with open(os.devnull, 'w') as devnull:
+            process = subprocess.run(
+                cmd, 
+                stdout=devnull,
+                stderr=devnull,
+                env=env,
+                timeout=60
+            )
         
-        # Verificar la salida para encontrar los archivos generados
-        if process.returncode != 0:
-            logging.error(f"Error ejecutando main.py: {process.stderr}")
-            raise Exception("Error en la ejecución de main.py")
-        
-        # Buscar archivos de salida (frame completo y ROI)
+        # Verificar si se generaron los archivos esperados
         frame_files = [f for f in os.listdir(temp_dir) if f.startswith("frame_") and f.endswith(".jpg")]
         roi_files = [f for f in os.listdir(temp_dir) if f.startswith("roi_") and f.endswith(".jpg")]
         bbox_file = os.path.join(temp_dir, "bbox.txt")
@@ -217,22 +218,23 @@ def ejecutar_main_para_extraer_roi(video_path: str) -> Tuple[np.ndarray, np.ndar
         with open(bbox_file, 'r') as f:
             bbox = [int(x) for x in f.read().strip().split(',')]
             
-        # Limpiar archivos temporales pero mantener directorio para depuración
+        # Limpiar archivos temporales
         for file in os.listdir(temp_dir):
             try:
                 os.remove(os.path.join(temp_dir, file))
             except:
                 pass
+                
+        # Eliminar el directorio temporal
+        try:
+            os.rmdir(temp_dir)
+        except:
+            pass
         
-        print(f"ROI extraído correctamente del video {os.path.basename(video_path)}")
         return frame, roi, bbox
         
     except Exception as e:
-        logging.error(f"Error extrayendo ROI: {e}")
-        
-        # Fallback: extraer un frame central manualmente
-        print(f"Utilizando método alternativo para extraer frames del video {os.path.basename(video_path)}...")
-        
+        # Fallback: extraer un frame central manualmente sin imprimir mensajes
         # Abrir el video y extraer un frame central
         cap = cv2.VideoCapture(video_path)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -292,10 +294,8 @@ def ejecutar_main_para_extraer_roi(video_path: str) -> Tuple[np.ndarray, np.ndar
         x1, y1, x2, y2 = best_box
         roi = frame[y1:y2, x1:x2].copy()
         
-        print(f"ROI extraído con método alternativo para {os.path.basename(video_path)}")
         return frame, roi, best_box
-
-
+    
 def generar_mapa_calor(
     video_path: str,
     placa_esperada: str,
@@ -428,8 +428,13 @@ def generar_mapa_calor(
     for i, angulo in enumerate(angulos):
         for j, escala in enumerate(escalas):
             iter_actual += 1
-            print(f"Progreso: {iter_actual}/{total_iter} ({iter_actual/total_iter*100:.1f}%)", 
-                  end='\r', flush=True)
+            
+            # Reportar progreso con el número actual de la etapa y el total
+            if hasattr(ocr_processor, 'progress_callback') and ocr_processor.progress_callback:
+                ocr_processor.progress_callback(iter_actual, total_iter)
+            else:
+                print(f"Progreso: {iter_actual}/{total_iter} ({iter_actual/total_iter*100:.1f}%)", 
+                    end='\r', flush=True)
             
             # 1. Rotación del ROI
             roi_rotado = corregir_rotacion(roi, angulo)

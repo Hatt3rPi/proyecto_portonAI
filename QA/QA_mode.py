@@ -25,7 +25,6 @@ import numpy as np
 import logging
 
 # Configurar el manejo de logging cuando QA_ANALISIS_AVANZADO está activo
-# para evitar que los mensajes de OCR-MULTIESCALA aparezcan en la consola
 try:
     from config import (
         QA_ANALISIS_AVANZADO,
@@ -219,6 +218,24 @@ print("\n=== Iniciando procesamiento de videos QA ===\n")
 
 # Inicializar modelos OCR si se activa el análisis avanzado
 if QA_ANALISIS_AVANZADO:
+    # Calcular rangos y totales para mensajes informativos
+    rango_angulos = QA_ANGULOS_VARIACION[0]
+    paso_angulo = QA_ANGULOS_VARIACION[1]
+    min_escala, max_escala, paso_escala = QA_ESCALAS_VARIACION
+    
+    n_angulos = len(np.arange(rango_angulos[0], rango_angulos[1] + paso_angulo, paso_angulo))
+    n_escalas = len(np.arange(min_escala, max_escala + paso_escala, paso_escala))
+    
+    total_iteraciones = n_angulos * n_escalas
+    
+    print("=" * 80)
+    print(f"ANÁLISIS AVANZADO ACTIVADO")
+    print(f"- Rango de ángulos: desde {rango_angulos[0]}° hasta {rango_angulos[1]}° con paso de {paso_angulo}° ({n_angulos} iteraciones)")
+    print(f"- Rango de escalas: desde {min_escala}% hasta {max_escala}% con paso de {paso_escala}% ({n_escalas} iteraciones)")
+    print(f"- Total de etapas de análisis por video: {n_angulos} × {n_escalas} = {total_iteraciones}")
+    print("=" * 80)
+    print()
+    
     print("Modo de análisis avanzado activado. Inicializando modelos...")
     manager = ModelManager()
     model_ocr = manager.get_ocr_model()
@@ -317,7 +334,7 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
 
         # Mostrar resultado final de este video
         print(" " * 150, end="\r")  # Limpiar línea anterior
-        print(f"[QA] {short_fname} | Esperada: {expected_str} | Detectadas: {detected_str} | {simbolo} | Área: {roi_area} px² | X: {roi_x} | Tiempo: {process_time_str} | Res: {resolution_str}")
+        print(f"[QA] {short_fname} | Esperada: {expected_str} | Detectadas: {detected_str} | {simbolo} | Área: {roi_area} px² | X: {roi_x} | Tiempo: {process_time_str} | Res: {resolution_str} | Progreso: [          ] 0%")
         sys.stdout.flush()
 
         results[fname] = {
@@ -339,46 +356,113 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
 
         # Análisis avanzado si está activado y tenemos placa esperada válida
         if QA_ANALISIS_AVANZADO and expected_plates and expected_plates[0] != "TBC":
-            print(f"\n[QA-AVANZADO] Iniciando análisis avanzado para {short_fname}...")
+            # Configuramos una variable global para la línea de estado actual
+            global current_status_line
+            current_status_line = f"[QA] {short_fname} | Esperada: {expected_str} | Detectadas: {detected_str} | {simbolo} | " \
+                                 f"Área: {roi_area} px² | X: {roi_x} | Tiempo: {process_time_str} | " \
+                                 f"Res: {resolution_str}"
             
-            # Obtener parámetros de variación
+            # Iniciar con la barra de progreso en cero
+            # Limpiar la línea anterior con espacios suficientes para cubrir cualquier línea anterior
+            print(" " * 150, end="\r")
+            sys.stdout.flush()
+            
+            # Usar caracteres de escape ANSI para limpiar la línea actual completamente
+            print("\033[K", end="\r")
+            sys.stdout.flush()
+            
+            # Inicializar la barra de progreso en 0%
+            bar = ' ' * 10
+            print(f"{current_status_line} | Progreso: [{bar}] 0% (0/0)", end="\r")
+            sys.stdout.flush()
+            
+            # Supresión total de los mensajes de salida
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+            devnull = open(os.devnull, 'w')
+            
+            # Obtener parámetros de variación para calcular el total de iteraciones
             rango_angulos = QA_ANGULOS_VARIACION[0]
             paso_angulo = QA_ANGULOS_VARIACION[1]
             min_escala, max_escala, paso_escala = QA_ESCALAS_VARIACION
             
-            # Calcular el total de iteraciones para la barra de progreso
+            # Calcular el total de iteraciones (ángulos × escalas)
             n_angulos = len(np.arange(rango_angulos[0], rango_angulos[1] + paso_angulo, paso_angulo))
             n_escalas = len(np.arange(min_escala, max_escala + paso_escala, paso_escala))
             total_iter = n_angulos * n_escalas
             
-            # Configurar un callback para actualizar la barra de progreso
+            # Definir un callback que actualiza la barra de progreso con el total correcto
             def progress_callback(current_iter, total_iter):
+                # Restaurar stdout solo para imprimir la actualización
+                sys.stdout = old_stdout
+                
+                # Calcular el porcentaje basado en el progreso total (ángulos × escalas)
                 percent = int(current_iter / total_iter * 100)
                 bar_length = 10
                 filled_len = int(bar_length * current_iter // total_iter)
                 bar = '█' * filled_len + ' ' * (bar_length - filled_len)
-                print(f"[QA-AVANZADO] Progreso: [{bar}] {percent}%", end="\r")
+                
+                # Limpiar la línea completamente antes de mostrar el progreso actualizado
+                print("\033[K", end="\r")
+                
+                # Mostrar el número actual de la etapa y el total
+                print(f"{current_status_line} | Progreso: [{bar}] {percent}% ({current_iter}/{total_iter})", end="\r")
                 sys.stdout.flush()
+                
+                # Volver a redirigir stdout a /dev/null
+                sys.stdout = devnull
             
-            # Generar mapa de calor
-            resultado_analisis = generar_mapa_calor(
-                video_path,
-                expected_plates[0],
-                ocr_processor,
-                rango_angulos,
-                paso_angulo,
-                min_escala,
-                max_escala,
-                paso_escala,
-                mapas_calor_dir,
-                fname
-            )
+            try:
+                # Redirigir la salida estándar y de error a /dev/null
+                sys.stdout = devnull
+                sys.stderr = devnull
+                
+                # Establecer el callback en el procesador OCR
+                ocr_processor.set_progress_callback(progress_callback)
+                
+                # Generar mapa de calor en silencio
+                resultado_analisis = generar_mapa_calor(
+                    video_path,
+                    expected_plates[0],
+                    ocr_processor,
+                    rango_angulos,
+                    paso_angulo,
+                    min_escala,
+                    max_escala,
+                    paso_escala,
+                    mapas_calor_dir,
+                    fname
+                )
+                
+                # Almacenar resultado si existe
+                if resultado_analisis:
+                    resultados_analisis_avanzado.append(resultado_analisis)
             
+            finally:
+                # Restaurar stdout y stderr y cerrar el archivo nulo
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+                devnull.close()
+            
+            # Al finalizar, actualizar la línea de progreso al 100% (exitoso) o quedarse en 0% (fallido)
             if resultado_analisis:
-                resultados_analisis_avanzado.append(resultado_analisis)
-                print(f"\n[QA-AVANZADO] Análisis completado para {short_fname}            ")
+                # Limpiar la línea completamente antes de mostrar el resultado final
+                sys.stdout = old_stdout
+                print("\033[K", end="\r") 
+                sys.stdout.flush()
+                
+                # Mostrar completado
+                bar = '█' * 10
+                print(f"{current_status_line} | Progreso: [{bar}] 100% ({total_iter}/{total_iter})")
             else:
-                print(f"\n[QA-AVANZADO] No se pudo completar el análisis para {short_fname}")
+                # Limpiar la línea completamente antes de mostrar el resultado final
+                sys.stdout = old_stdout
+                print("\033[K", end="\r") 
+                sys.stdout.flush()
+                
+                # Mostrar error
+                bar = ' ' * 10
+                print(f"{current_status_line} | Progreso: [{bar}] 0% (0/{total_iter})")
 
     except subprocess.CalledProcessError as e:
         print(f"\n[ERROR] Fallo procesando {fname}: {e}")

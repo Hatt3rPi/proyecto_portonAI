@@ -257,55 +257,35 @@ class OCRProcessor:
         """
         # Si llega un ROI vacío, no intentamos ningún resize
         if plate_img is None or plate_img.size == 0:
-            logging.warning("OCR multiescala omitido: ROI vacío")
             return []
+            
         results = []
-        total_scales = 12  # Del 50% al 100% en pasos de 5%
-        current_scale = 0
+        total_scales = 11  # Del 50% al 100% en pasos de 5% (11 escalas)
+        
+        # Ya no reportamos progreso interno aquí, solo devolvemos los resultados
+        # El progreso se maneja en generar_mapa_calor que conoce el total de iteraciones
         
         for scale in range(50, 105, 5):
-            current_scale += 1
-            # Llamar al callback de progreso si existe
-            if self.progress_callback:
-                self.progress_callback(current_scale, total_scales)
-                
             try:
                 fx = fy = scale / 100.0
                 roi = cv2.resize(plate_img, None, fx=fx, fy=fy)
                 
-                # Crear un logger específico para los mensajes de OCR-MULTIESCALA
-                # que se dirigirá solo a archivo, no a consola
-                ocr_logger = logging.getLogger("ocr_multiescala_logger")
-                ocr_logger.setLevel(logging.DEBUG)
-                # Usar propagate=False para evitar que los mensajes vayan al logger raíz
-                ocr_logger.propagate = False
-                
-                # Solo mostrar logs detallados si QA_ANALISIS_AVANZADO está activo
-                if QA_ANALISIS_AVANZADO:
-                    ocr_logger.debug(f"[OCR-MULTIESCALA] Procesando escala {scale}% ({roi.shape[1]}x{roi.shape[0]})")
-                    
+                # OCR procesamiento
                 ocr_out = self.model_ocr.predict(roi, device='cuda:0', verbose=False)
                 proc = process_ocr_result_detailed(ocr_out, self.names)
                 text = proc.get('ocr_text', '').strip()
                 
-                # Siempre loguear el resultado para análisis posterior, pero solo con el logger específico
+                # Filtrar resultados inválidos
                 valid = is_valid_plate(text)
-                if QA_ANALISIS_AVANZADO:
-                    ocr_logger.debug(f"[OCR-MULTIESCALA] Escala {scale}%: '{text}' válido={valid} conf={proc.get('confidence', 0):.1f}")
-                
-                # Filtrar resultados inválidos como antes
                 if not text or not valid:
                     continue
                 
                 proc['coverage'] = scale
                 results.append(proc)
-            except Exception as e:
-                logging.warning(f"Error OCR multiescala escala {scale}%: {e}")
-        
-        # Solo mostrar logs de resumen con el logger específico
-        if QA_ANALISIS_AVANZADO:
-            ocr_logger = logging.getLogger("ocr_multiescala_logger")
-            ocr_logger.debug(f"[OCR-MULTIESCALA] Terminado con {len(results)}/{total_scales} escalas generando texto válido")
+                
+            except Exception:
+                # Suprimir errores completamente
+                pass
         
         return results
 
