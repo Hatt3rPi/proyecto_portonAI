@@ -261,12 +261,14 @@ class OCRProcessor:
                 proc = process_ocr_result_detailed(ocr_out, self.names)
                 text = proc.get('ocr_text', '').strip()
                 
-                if text:
-                    logging.debug(f"[OCR-MULTIESCALA] Escala {scale}%: '{text}' válido={is_valid_plate(text)} conf={proc.get('confidence', 0):.1f}")
+                # Siempre loguear el resultado para análisis posterior, no solo si hay texto
+                valid = is_valid_plate(text)
+                logging.debug(f"[OCR-MULTIESCALA] Escala {scale}%: '{text}' válido={valid} conf={proc.get('confidence', 0):.1f}")
                 
-                if not text or not is_valid_plate(text):
-                    #logging.debug(f"OCR multiescala descarta '{text}' inválido a escala {scale}%")
+                # Filtrar resultados inválidos como antes
+                if not text or not valid:
                     continue
+                
                 proc['coverage'] = scale
                 results.append(proc)
             except Exception as e:

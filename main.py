@@ -148,7 +148,7 @@ def schedule_snapshot_and_ocr(plate_id, inst):
             return
 
         # 3) Intentar OCR multiescala en el ROI
-        multiscale = ocr_processor.process_multiescala(roi)
+        multiscale = ocr_processor.process_multiscale(roi)
         best = apply_consensus_voting(multiscale, min_length=5)
         if best is not None:
             candidate_text = best.get("ocr_text", "").strip()
@@ -476,7 +476,7 @@ def main(video_path=None):
                 crop = frame_ld[y1:y2, x1:x2]
                 try:
                     logging.debug(f"[OCR-STREAM] Iniciando OCR multiescala para {pid}, ROI={crop.shape}")
-                    multiscale = ocr_processor.process_multiescala(crop)
+                    multiscale = ocr_processor.process_multiscale(crop)
                     best = apply_consensus_voting(multiscale, min_length=5)
                     if best is None and multiscale:
                         best = max(multiscale, key=lambda r: r["confidence"])

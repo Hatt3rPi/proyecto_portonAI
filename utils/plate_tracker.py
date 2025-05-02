@@ -28,8 +28,8 @@ class PlateTrackInstance:
     missed_count: int = 0
     matched_detections: int = 0
     last_detection: Optional[Tuple[int, int, int, int]] = None
-    detected_at: Optional[float] = None 
-
+    detected_at: Optional[float] = None
+    metadata: dict = field(default_factory=dict)
 
 def calculate_iou(box1, box2):
     """Calcula la intersección sobre unión (IoU) entre dos cajas."""
@@ -144,6 +144,9 @@ class PlateTrackerManager:
         self.exclude_footer = exclude_footer
         self.footer_ratio = footer_ratio
         self.known_invalid_words = ['CUSTOMWARE', 'CUSTOM', 'WARE', 'CUSTOMW']
+        self.experimental_mode = True  # Habilitar experimentación con deskewing
+        self.deskew_success_rate = 0
+        self.deskew_attempt_count = 0
         
         # Verificar disponibilidad de trackers
         self.tracker_type = None
@@ -208,6 +211,95 @@ class PlateTrackerManager:
             
         return True
     
+    def _extract_and_deskew_plate(self, frame, bbox):
+        """
+        Extrae el ROI de la placa y realiza una corrección de perspectiva si es posible.
+        
+        Args:
+            frame: Frame completo
+            bbox: Tupla (x1, y1, x2, y2) con las coordenadas del ROI
+            
+        Returns:
+            Tuple con (ROI_original, ROI_deskewed, success)
+            donde success indica si la corrección tuvo éxito
+        """
+        x1, y1, x2, y2 = bbox
+        
+        # 1. Extraer ROI original
+        ROI_original = frame[y1:y2, x1:x2].copy()
+        h_orig, w_orig = ROI_original.shape[:2]
+        
+        # Si el ROI es demasiado pequeño, no intentar deskew
+        if h_orig < 20 or w_orig < 20:
+            return ROI_original, ROI_original, False
+            
+        try:
+            # 2. Detectar bordes y contornos
+            gray = cv2.cvtColor(ROI_original, cv2.COLOR_BGR2GRAY)
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+            edges = cv2.Canny(blurred, 50, 150)
+            
+            # Dilatar bordes para conexión de líneas
+            kernel = np.ones((3, 3), np.uint8)
+            dilated = cv2.dilate(edges, kernel, iterations=1)
+            
+            contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if not contours:
+                return ROI_original, ROI_original, False
+                
+            # Encontrar el contorno más grande
+            largest_contour = max(contours, key=cv2.contourArea)
+            
+            # Si el contorno es muy pequeño, ignorar
+            if cv2.contourArea(largest_contour) < (h_orig * w_orig * 0.2):
+                return ROI_original, ROI_original, False
+            
+            # 3. Aproximar contorno a un polígono
+            epsilon = 0.04 * cv2.arcLength(largest_contour, True)
+            approx = cv2.approxPolyDP(largest_contour, epsilon, True)
+            
+            # Buscar un contorno con aproximadamente 4 puntos (rectangular)
+            if len(approx) < 4 or len(approx) > 6:
+                return ROI_original, ROI_original, False
+                
+            # Si son más de 4 puntos, quedarse con los 4 más importantes
+            if len(approx) > 4:
+                # Ordenar vértices por área de contribución (distancia a los bordes)
+                def vertex_importance(point):
+                    px, py = point[0]
+                    # Calcular qué tan cerca está de cada borde
+                    dist_to_edges = min(px, py, w_orig - px, h_orig - py)
+                    return dist_to_edges
+                
+                # Ordenar por importancia (más alejados de los bordes son más importantes)
+                sorted_vertices = sorted(approx, key=vertex_importance, reverse=True)
+                approx = sorted_vertices[:4]
+            
+            # Asegurarse de que los puntos estén en orden horario
+            approx = np.array(sorted(approx, key=lambda p: (p[0][0], p[0][1])))
+            
+            # Puntos ordenados: superior-izquierda, superior-derecha, inferior-derecha, inferior-izquierda
+            pts_src = np.float32([p[0] for p in approx])
+            
+            # 4. Definir puntos de destino (rectángulo con proporción 2:1)
+            # Calcular el ancho y alto destino manteniendo la proporción 2:1 de las placas
+            w_dst = 200
+            h_dst = 100
+            pts_dst = np.float32([[0, 0], [w_dst, 0], [w_dst, h_dst], [0, h_dst]])
+            
+            # Calcular la matriz de transformación de perspectiva
+            H = cv2.getPerspectiveTransform(pts_src, pts_dst)
+            
+            # Aplicar la transformación
+            ROI_deskewed = cv2.warpPerspective(ROI_original, H, (w_dst, h_dst))
+            
+            return ROI_original, ROI_deskewed, True
+            
+        except Exception as e:
+            logging.warning(f"Error en deskewing de placa: {e}")
+            return ROI_original, ROI_original, False
+
     def update(self, frame, detections):
         """
         Actualiza el tracking basado en el frame actual y las nuevas detecciones.
@@ -356,9 +448,123 @@ class PlateTrackerManager:
                 
                 self.active_instances[track_id] = new_instance
         
+        # EXPERIMENTAL: Procesamiento con deskew para mejorar OCR
+        if self.experimental_mode:
+            for track_id, inst in list(self.active_instances.items()):
+                # Solo procesar instancias pendientes que no hayan sido procesadas antes
+                if inst.ocr_status != 'pending' or 'deskew_processed' in inst.metadata:
+                    continue
+                
+                # Validar que el bbox tenga coordenadas válidas
+                x1, y1, x2, y2 = inst.bbox
+                if x2 <= x1 or y2 <= y1 or x1 < 0 or y1 < 0 or x2 >= frame.shape[1] or y2 >= frame.shape[0]:
+                    continue
+                
+                # 1. Extraer ROI original y aplicar deskewing
+                ROI_original, ROI_deskewed, deskew_success = self._extract_and_deskew_plate(frame, inst.bbox)
+                
+                self.deskew_attempt_count += 1
+                if deskew_success:
+                    self.deskew_success_rate += 1
+                    
+                # Calcular tasa de éxito cada 50 intentos
+                if self.deskew_attempt_count % 50 == 0:
+                    success_pct = (self.deskew_success_rate / self.deskew_attempt_count) * 100
+                    logging.info(f"[EXPERIMENTAL] Tasa de éxito deskew: {success_pct:.1f}% ({self.deskew_success_rate}/{self.deskew_attempt_count})")
+                
+                # 2. Procesar OCR en ambas versiones
+                try:
+                    # Marcar como procesado incluso si falla, para no reintentarlo
+                    inst.metadata['deskew_processed'] = True
+                    
+                    if hasattr(self, 'model_ocr') and self.model_ocr is not None and hasattr(self, 'ocr_names') and self.ocr_names is not None:
+                        ocr_processor = OCRProcessor(self.model_ocr, self.ocr_names)
+                        
+                        # 2.1 OCR en ROI original
+                        multiscale_orig = ocr_processor.process_multiscale(ROI_original)
+                        best_orig = None
+                        texto_orig = ""
+                        conf_orig = 0.0
+                        
+                        if multiscale_orig:
+                            from .ocr import apply_consensus_voting, is_valid_plate
+                            best_orig = apply_consensus_voting(multiscale_orig, min_length=5)
+                            if best_orig:
+                                texto_orig = best_orig.get("ocr_text", "").strip()
+                                conf_orig = best_orig.get("confidence", 0.0)
+                                
+                        # 2.2 OCR en ROI deskewed (solo si deskew fue exitoso)
+                        texto_deskew = ""
+                        conf_deskew = 0.0
+                        best_deskew = None
+                        
+                        if deskew_success:
+                            multiscale_deskew = ocr_processor.process_multiscale(ROI_deskewed)
+                            if multiscale_deskew:
+                                best_deskew = apply_consensus_voting(multiscale_deskew, min_length=5)
+                                if best_deskew:
+                                    texto_deskew = best_deskew.get("ocr_text", "").strip()
+                                    conf_deskew = best_deskew.get("confidence", 0.0)
+                        
+                        # 3. Comparar resultados y escoger el mejor
+                        if deskew_success and conf_deskew > conf_orig and is_valid_plate(texto_deskew):
+                            mejor_texto = texto_deskew
+                            mejor_conf = conf_deskew
+                            metodo_elegido = 'deskew'
+                        elif is_valid_plate(texto_orig):
+                            mejor_texto = texto_orig
+                            mejor_conf = conf_orig
+                            metodo_elegido = 'orig'
+                        else:
+                            # No se encontró texto válido
+                            continue
+                        
+                        # 4. Marcar como completado con metadatos
+                        inst.ocr_text = mejor_texto
+                        inst.ocr_conf = mejor_conf
+                        inst.ocr_status = 'completed_experimental'
+                        inst.metadata.update({
+                            'orig': {'texto': texto_orig, 'conf': conf_orig},
+                            'deskew': {'texto': texto_deskew, 'conf': conf_deskew, 'success': deskew_success},
+                            'chosen': metodo_elegido,
+                            'experiment': 'deskew_vs_multiscale'
+                        })
+                        
+                        # Guardar snapshots para análisis si hay texto reconocido
+                        if mejor_texto:
+                            try:
+                                import os
+                                import time as time_module  # Import time with an alias to avoid conflict
+                                debug_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "debug")
+                                timestamp_ms = int(time_module.time() * 1000)  # Use the imported module
+                                
+                                # Guardar original
+                                orig_path = os.path.join(debug_dir, f"exp_{timestamp_ms}_{track_id}_orig_{texto_orig}.jpg")
+                                cv2.imwrite(orig_path, ROI_original)
+                                
+                                # Guardar deskewed si tuvo éxito
+                                if deskew_success:
+                                    deskew_path = os.path.join(debug_dir, f"exp_{timestamp_ms}_{track_id}_deskew_{texto_deskew}.jpg")
+                                    cv2.imwrite(deskew_path, ROI_deskewed)
+                                
+                                # Log para QA
+                                logging.info(f"[EXPERIMENTAL] Placa {track_id}: orig='{texto_orig}' ({conf_orig:.1f}), deskew='{texto_deskew}' ({conf_deskew:.1f}), elegido='{mejor_texto}' ({metodo_elegido})")
+                                
+                            except Exception as e:
+                                logging.warning(f"Error guardando imágenes experimentales: {e}")
+                                
+                except Exception as e:
+                    logging.warning(f"Error en procesamiento experimental de OCR: {e}")
+        
         # 6. Eliminar trackers con demasiados frames perdidos
         for track_id in list(self.active_instances.keys()):
             if self.active_instances[track_id].missed_count > self.max_missed:
+                # Antes de eliminar, guardar estadísticas si fue un experimento
+                inst = self.active_instances[track_id]
+                if inst.ocr_status == 'completed_experimental':
+                    chosen = inst.metadata.get('chosen', '')
+                    logging.info(f"[EXPERIMENTAL-FINAL] Track {track_id}: método elegido={chosen}, texto={inst.ocr_text}")
+                    
                 if self.active_instances[track_id].ocr_status == 'completed':
                     logging.debug(f"Eliminando tracker {track_id} con OCR completado: {self.active_instances[track_id].ocr_text}")
                 del self.active_instances[track_id]

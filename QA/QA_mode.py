@@ -12,7 +12,9 @@ import subprocess
 import json
 import sys
 import time
+import re
 from datetime import datetime
+from collections import defaultdict
 
 # --- Configuración de rutas ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -37,6 +39,45 @@ def colorear_patente(detectada, esperada):
             resultado += f"{COLOR_FAIL}{char_detectada}{COLOR_RESET}"
 
     return resultado
+
+# --- Añadir modo análisis de consenso OCR para casos fallidos ---
+def extract_ocr_details_from_logs(stderr_output):
+    """
+    Extrae detalles del OCR multiescala desde los logs cuando una detección falla
+    """
+    ocr_details = []
+    in_multi_scale_section = False
+    current_scale = None
+    
+    # Buscar líneas con información OCR multiescala
+    for line in stderr_output.splitlines():
+        # Detectar inicio de procesamiento multiescala
+        if "[OCR-MULTIESCALA] Procesando escala" in line:
+            match = re.search(r"escala (\d+)%", line)
+            if match:
+                current_scale = match.group(1)
+                in_multi_scale_section = True
+        
+        # Capturar resultado de cada escala
+        elif in_multi_scale_section and "[OCR-MULTIESCALA] Escala" in line:
+            match = re.search(r"Escala (\d+)%: '([^']+)' válido=(\w+) conf=([0-9.]+)", line)
+            if match:
+                scale = match.group(1)
+                text = match.group(2)
+                valid = match.group(3) == "True"
+                conf = float(match.group(4))
+                ocr_details.append({
+                    "escala": scale + "%",
+                    "texto": text,
+                    "valido": valid,
+                    "confianza": conf
+                })
+        
+        # Detectar fin del proceso multiescala
+        elif in_multi_scale_section and "[OCR-MULTIESCALA] Terminado" in line:
+            in_multi_scale_section = False
+    
+    return ocr_details
 
 # --- Asegurar carpetas críticas ---
 if not os.path.exists(VIDEOS_DIR):
@@ -133,8 +174,11 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
     # Convertimos la lista en cadena simple para impresión
     expected_str = ", ".join(expected_plates)
 
+    # Obtener nombre corto del archivo (últimos 12 caracteres sin extensión)
+    short_fname = fname[-16:-4] if len(fname) > 16 else fname[:-4]
+
     # Línea de estado en curso (antes de procesar)
-    print(f"[QA] {fname} | Esperada: {expected_str} | Detectadas:        | ⏳ | Área:        px² | X:      | Tiempo:       | Res:         ", end="\r")
+    print(f"[QA] {short_fname} | Esperada: {expected_str} | Detectadas:        | ⏳ | Área:        px² | X:      | Tiempo:       | Res:         ", end="\r")
     sys.stdout.flush()
 
     try:
@@ -148,6 +192,7 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
         )
 
         output = process.stdout.strip()
+        stderr_output = process.stderr.strip()
         detected_plates = []
         roi_area = None
         roi_x = None
@@ -173,7 +218,13 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
         # Comparar resultados
         success = [p for p in expected_plates if p in detected_plates]
         failed = [p for p in expected_plates if p not in detected_plates]
+        false_positives = [p for p in detected_plates if p not in expected_plates]
         rate = (len(success) / len(expected_plates) * 100) if expected_plates else 0.0
+
+        # Análisis detallado de multiescala solo para casos fallidos
+        ocr_analysis = None
+        if failed and detected_plates:  # Si falló la detección pero detectó algo
+            ocr_analysis = extract_ocr_details_from_logs(stderr_output)
 
         # Formatear área y X para mostrar siempre ancho fijo
         roi_area = f"{roi_area:>6}" if roi_area is not None else "  N/A "
@@ -197,7 +248,7 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
 
         # Mostrar resultado final de este video
         print(" " * 150, end="\r")  # Limpiar línea anterior
-        print(f"[QA] {fname} | Esperada: {expected_str} | Detectadas: {detected_str} | {simbolo} | Área: {roi_area} px² | X: {roi_x} | Tiempo: {process_time_str} | Res: {resolution_str}")
+        print(f"[QA] {short_fname} | Esperada: {expected_str} | Detectadas: {detected_str} | {simbolo} | Área: {roi_area} px² | X: {roi_x} | Tiempo: {process_time_str} | Res: {resolution_str}")
         sys.stdout.flush()
 
         results[fname] = {
@@ -212,7 +263,9 @@ for fname in sorted(os.listdir(VIDEOS_DIR)):
             "roi_area": roi_area.strip() if isinstance(roi_area, str) else roi_area,
             "roi_x": roi_x.strip() if isinstance(roi_x, str) else roi_x,
             "process_time": process_time,
-            "resolution": resolution
+            "resolution": resolution,
+            "ocr_analysis": ocr_analysis if ocr_analysis else None,
+            "has_match_in_scales": any(entry["texto"] == expected_plates[0] for entry in (ocr_analysis or []))
         }
 
     except subprocess.CalledProcessError as e:
@@ -248,8 +301,6 @@ print(f"Tasa de éxito global: {global_rate:.2f}%")
 print(f"Tiempo promedio detección a OCR: {average_time_ms:.2f} ms")
 
 # --- Estadísticas detalladas ---
-from collections import defaultdict
-
 # Estadísticas por patente
 print("\n=== Estadísticas Detalladas por Patente ===")
 plate_stats = defaultdict(lambda: {'expected': 0, 'success': 0, 'times': []})
@@ -323,4 +374,69 @@ output_path = os.path.join(RESULTADOS_DIR, output_filename)
 with open(output_path, "w") as f:
     json.dump(results, f, indent=4)
 
+# Crear informe detallado para análisis de consenso
+consensus_analysis_file = os.path.join(RESULTADOS_DIR, f"consensus_analysis_{timestamp}.txt")
+with open(consensus_analysis_file, "w") as f:
+    f.write("=== ANÁLISIS DETALLADO DE CONSENSO OCR ===\n\n")
+    
+    # Analizar primero los casos donde la escala tenía el texto correcto pero el consenso falló
+    missed_opportunities = [
+        (fname, result) for fname, result in results.items()
+        if result["failed"] and result["detected"] and 
+           result["ocr_analysis"] and 
+           any(entry["texto"] == result["expected"][0] for entry in result["ocr_analysis"])
+    ]
+    
+    if missed_opportunities:
+        f.write("### CASOS DONDE ALGUNA ESCALA DETECTÓ LA PLACA CORRECTA PERO EL CONSENSO FALLÓ ###\n\n")
+        for fname, result in missed_opportunities:
+            short_name = fname[-16:-4] if len(fname) > 16 else fname[:-4]
+            f.write(f"Archivo: {short_name} (Completo: {fname})\n")
+            f.write(f"Esperado: {', '.join(result['expected'])}\n")
+            f.write(f"Detectado por consenso: {', '.join(result['detected'])}\n")
+            f.write("Resultados multiescala:\n")
+            f.write(f"{'Escala':8} {'Texto':15} {'Válido':8} {'Confianza':10} {'Coincide':10}\n")
+            
+            for entry in result["ocr_analysis"]:
+                valid_symbol = "Sí" if entry["valido"] else "No"
+                matches_expected = entry["texto"] == result["expected"][0]
+                match_symbol = "SÍ" if matches_expected else ""
+                if matches_expected:
+                    f.write(f"{entry['escala']:8} {entry['texto']:15} {valid_symbol:8} {entry['confianza']:10.2f} {match_symbol:10} *** CORRECTA IGNORADA ***\n")
+                else:
+                    f.write(f"{entry['escala']:8} {entry['texto']:15} {valid_symbol:8} {entry['confianza']:10.2f} {match_symbol:10}\n")
+            f.write("\n" + "-"*50 + "\n\n")
+    
+    # Luego mostrar todos los demás casos fallidos donde ninguna escala tenía el texto correcto
+    normal_failures = [
+        (fname, result) for fname, result in results.items()
+        if result["failed"] and result["detected"] and 
+           result["ocr_analysis"] and 
+           not any(entry["texto"] == result["expected"][0] for entry in result["ocr_analysis"])
+    ]
+    
+    if normal_failures:
+        f.write("### OTROS CASOS FALLIDOS (NINGUNA ESCALA DETECTÓ LA PLACA CORRECTA) ###\n\n")
+        for fname, result in normal_failures:
+            short_name = fname[-16:-4] if len(fname) > 16 else fname[:-4]
+            f.write(f"Archivo: {short_name} (Completo: {fname})\n")
+            f.write(f"Esperado: {', '.join(result['expected'])}\n")
+            f.write(f"Detectado: {', '.join(result['detected'])}\n")
+            f.write("Resultados multiescala:\n")
+            f.write(f"{'Escala':8} {'Texto':15} {'Válido':8} {'Confianza':10}\n")
+            
+            for entry in result["ocr_analysis"]:
+                valid_symbol = "Sí" if entry["valido"] else "No"
+                f.write(f"{entry['escala']:8} {entry['texto']:15} {valid_symbol:8} {entry['confianza']:10.2f}\n")
+            f.write("\n" + "-"*50 + "\n\n")
+
+# Añadir estadísticas de oportunidades perdidas
+missed_opportunities_count = sum(1 for r in results.values() if r.get("has_match_in_scales", False) and r["failed"])
+if missed_opportunities_count > 0:
+    print(f"\n=== Análisis de oportunidades perdidas ===")
+    print(f"Detecciones donde alguna escala tenía el texto correcto pero el consenso falló: {missed_opportunities_count}")
+    print(f"Esto representa un {missed_opportunities_count/len([r for r in results.values() if r['failed'] and r['detected']])*100:.2f}% de los casos fallidos")
+    print(f"Ver detalles completos en {consensus_analysis_file}")
+
 print(f"\n[QA] Resultados completos guardados en {output_path}")
+print(f"[QA] Análisis detallado de consenso guardado en {consensus_analysis_file}")
