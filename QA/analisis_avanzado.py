@@ -6,6 +6,7 @@ de rendimiento OCR variando ángulos y escalas.
 """
 
 import os
+import sys
 import cv2
 import numpy as np
 import matplotlib
@@ -13,10 +14,19 @@ matplotlib.use('Agg')  # Configurar backend no interactivo
 import matplotlib.pyplot as plt
 import logging
 import time
+import subprocess
 from typing import Dict, List, Tuple, Optional, Any
 import math
 import re
 from difflib import SequenceMatcher
+
+# Añadir directorio principal al path para importar módulos del sistema principal
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Importar utilidades necesarias del sistema principal
+from utils.image_processing import resize_for_inference, preprocess_frame, load_calibration_params
+from utils.suppression import suppress_c_stderr
+from config import CONFIANZA_PATENTE, DISPLAY_DURATION, OCR_STREAM_ZONE
 
 def similar(a: str, b: str) -> float:
     """
@@ -27,11 +37,16 @@ def similar(a: str, b: str) -> float:
         Porcentaje de similitud (0-100)
     """
     if not a and not b:
-        return 100.0
+        return 0.0
     if not a or not b:
         return 0.0
     
-    # Usar SequenceMatcher para strings cortos
+    # Comparación carácter a carácter para placas
+    if len(a) == len(b):
+        matches = sum(1 for c1, c2 in zip(a, b) if c1 == c2)
+        return (matches / len(a)) * 100
+    
+    # Si longitudes son diferentes, usar SequenceMatcher
     similarity = SequenceMatcher(None, a, b).ratio() * 100
     return similarity
 
@@ -143,6 +158,144 @@ def corregir_distorsion(img: np.ndarray) -> Tuple[np.ndarray, bool]:
         return img.copy(), False
 
 
+def ejecutar_main_para_extraer_roi(video_path: str) -> Tuple[np.ndarray, np.ndarray, List[int]]:
+    """
+    Ejecuta el proceso main.py para analizar el video y obtener el frame y ROI utilizados
+    para la detección exitosa de la placa.
+    
+    Args:
+        video_path: Ruta al video a analizar
+        
+    Returns:
+        Tupla con (frame, roi, bbox) donde:
+        - frame: El frame completo donde se detectó la placa
+        - roi: La región de interés (ROI) donde está la placa
+        - bbox: Coordenadas [x1, y1, x2, y2] del bbox en el frame
+    """
+    # Crear directorio temporal para la salida
+    debug_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "debug")
+    temp_dir = os.path.join(debug_dir, f"qa_temp_{int(time.time())}")
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    # Preparar entorno para capturar los archivos generados
+    env = os.environ.copy()
+    env["QA_EXTRACT_MODE"] = "1"  # Variable para indicar modo de extracción
+    env["QA_OUTPUT_DIR"] = temp_dir
+    
+    print(f"Ejecutando main.py para extraer ROI de {os.path.basename(video_path)}...")
+    
+    # Ejecutar el proceso main.py con los argumentos adecuados
+    try:
+        cmd = [sys.executable, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"), 
+               "--video_path", video_path, "--qa_extract"]
+        
+        process = subprocess.run(
+            cmd, 
+            capture_output=True, 
+            text=True, 
+            env=env,
+            timeout=60  # 60 segundos máximo para procesar
+        )
+        
+        # Verificar la salida para encontrar los archivos generados
+        if process.returncode != 0:
+            logging.error(f"Error ejecutando main.py: {process.stderr}")
+            raise Exception("Error en la ejecución de main.py")
+        
+        # Buscar archivos de salida (frame completo y ROI)
+        frame_files = [f for f in os.listdir(temp_dir) if f.startswith("frame_") and f.endswith(".jpg")]
+        roi_files = [f for f in os.listdir(temp_dir) if f.startswith("roi_") and f.endswith(".jpg")]
+        bbox_file = os.path.join(temp_dir, "bbox.txt")
+        
+        if not frame_files or not roi_files or not os.path.exists(bbox_file):
+            raise Exception("No se generaron los archivos esperados")
+        
+        # Leer los archivos
+        frame = cv2.imread(os.path.join(temp_dir, frame_files[0]))
+        roi = cv2.imread(os.path.join(temp_dir, roi_files[0]))
+        
+        with open(bbox_file, 'r') as f:
+            bbox = [int(x) for x in f.read().strip().split(',')]
+            
+        # Limpiar archivos temporales pero mantener directorio para depuración
+        for file in os.listdir(temp_dir):
+            try:
+                os.remove(os.path.join(temp_dir, file))
+            except:
+                pass
+        
+        print(f"ROI extraído correctamente del video {os.path.basename(video_path)}")
+        return frame, roi, bbox
+        
+    except Exception as e:
+        logging.error(f"Error extrayendo ROI: {e}")
+        
+        # Fallback: extraer un frame central manualmente
+        print(f"Utilizando método alternativo para extraer frames del video {os.path.basename(video_path)}...")
+        
+        # Abrir el video y extraer un frame central
+        cap = cv2.VideoCapture(video_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # Intentar extraer frames en diferentes posiciones
+        frames = []
+        positions = [total_frames // 2, total_frames // 3, 2 * total_frames // 3]
+        
+        for pos in positions:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
+            ret, frame = cap.read()
+            if ret:
+                frames.append(frame)
+        
+        cap.release()
+        
+        if not frames:
+            raise Exception("No se pudo extraer ningún frame del video")
+        
+        # Usar el primer frame exitoso
+        frame = frames[0]
+        
+        # Detectar la placa en el frame
+        from models import ModelManager
+        manager = ModelManager()
+        model_plate = manager.get_plate_model()
+        
+        # Preprocesar frame para detección
+        inference_frame, scale_x, scale_y = resize_for_inference(frame, max_dim=640)
+        calib_params = load_calibration_params()
+        inference_frame = preprocess_frame(inference_frame, calib_params)
+        
+        # Detectar placas
+        results = model_plate.predict(inference_frame, device='cuda:0', verbose=False)
+        
+        # Encontrar la detección con mejor confianza
+        best_box = None
+        best_conf = 0
+        
+        for box in results[0].boxes:
+            conf = float(box.conf[0]) * 100
+            if conf >= CONFIANZA_PATENTE and conf > best_conf:
+                x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
+                x1h, y1h = int(x1 * scale_x), int(y1 * scale_y)
+                x2h, y2h = int(x2 * scale_x), int(y2 * scale_y)
+                best_box = [x1h, y1h, x2h, y2h]
+                best_conf = conf
+        
+        if not best_box:
+            # Último recurso: usar una región central como estimación
+            h, w = frame.shape[:2]
+            x1, y1 = w // 4, h // 3
+            x2, y2 = 3 * w // 4, 2 * h // 3
+            best_box = [x1, y1, x2, y2]
+            
+        # Extraer ROI
+        x1, y1, x2, y2 = best_box
+        roi = frame[y1:y2, x1:x2].copy()
+        
+        print(f"ROI extraído con método alternativo para {os.path.basename(video_path)}")
+        return frame, roi, best_box
+
+
 def generar_mapa_calor(
     video_path: str,
     placa_esperada: str,
@@ -168,35 +321,73 @@ def generar_mapa_calor(
     Returns:
         Dict con matrices de datos para los mapas de calor
     """
-    # Capturar ROI original del video
-    cap = cv2.VideoCapture(video_path)
     print(f"Analizando video: {os.path.basename(video_path)}")
     print(f"Placa esperada: {placa_esperada}")
     
-    # Leer frame central del video (asumiendo que ahí está la placa)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames // 2)
-    ret, frame = cap.read()
-    cap.release()
-    
-    if not ret:
-        logging.error(f"No se pudo leer el frame del video {video_path}")
-        return {}
-    
-    # Detectar placa en el frame
-    # Aquí simplificamos para usar una región fija - en la práctica usaríamos el detector de placas
-    h, w = frame.shape[:2]
-    roi_x, roi_y = w // 4, h // 3
-    roi_w, roi_h = w // 2, h // 3
-    roi = frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w]
-    
-    # Crear directorios para resultados
-    os.makedirs(output_dir, exist_ok=True)
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    video_id = os.path.splitext(video_name)[0]
-    
-    # Guardar ROI original para referencia
-    cv2.imwrite(os.path.join(output_dir, f"{video_id}_roi_original.jpg"), roi)
+    # Extraer frame y ROI utilizando el mismo proceso del main.py
+    try:
+        frame, roi, bbox = ejecutar_main_para_extraer_roi(video_path)
+        
+        # Crear directorio específico para este video
+        video_id = os.path.splitext(os.path.basename(video_name))[0]
+        video_dir = os.path.join(output_dir, video_id)
+        os.makedirs(video_dir, exist_ok=True)
+        
+        # Guardar frame completo con bbox y ROI original
+        frame_with_rect = frame.copy()
+        x1, y1, x2, y2 = bbox
+        cv2.rectangle(frame_with_rect, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(frame_with_rect, "ROI Original", (x1, y1-10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+        
+        # Guardar imágenes para referencia
+        cv2.imwrite(os.path.join(video_dir, f"{video_id}_frame.jpg"), frame)
+        cv2.imwrite(os.path.join(video_dir, f"{video_id}_frame_with_bbox.jpg"), frame_with_rect)
+        cv2.imwrite(os.path.join(video_dir, f"{video_id}_roi_original.jpg"), roi)
+        
+        print(f"Frame y ROI extraídos y guardados en {video_dir}")
+        print(f"Dimensiones del ROI original: {roi.shape[1]}x{roi.shape[0]}")
+        
+    except Exception as e:
+        logging.error(f"Error al extraer frame/ROI: {e}")
+        print("Fallback a método de extracción simple...")
+        
+        # Capturar ROI original del video como fallback
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            logging.error(f"No se pudo abrir el video {video_path}")
+            return {}
+            
+        # Leer frame central del video
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames // 2)
+        ret, frame = cap.read()
+        cap.release()
+        
+        if not ret:
+            logging.error(f"No se pudo leer el frame del video {video_path}")
+            return {}
+        
+        # Crear directorios para resultados
+        video_id = os.path.splitext(os.path.basename(video_name))[0]
+        video_dir = os.path.join(output_dir, video_id)
+        os.makedirs(video_dir, exist_ok=True)
+        
+        # Detección simple para obtener ROI
+        h, w = frame.shape[:2]
+        # Usar región central como ROI
+        roi_x, roi_y = w // 4, h // 3
+        roi_w, roi_h = w // 2, h // 3
+        roi = frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w]
+        
+        # Guardar imágenes para referencia
+        cv2.imwrite(os.path.join(video_dir, f"{video_id}_frame.jpg"), frame)
+        frame_with_rect = frame.copy()
+        cv2.rectangle(frame_with_rect, (roi_x, roi_y), (roi_x+roi_w, roi_y+roi_h), (0, 255, 0), 2)
+        cv2.putText(frame_with_rect, "ROI Fallback", (roi_x, roi_y-10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+        cv2.imwrite(os.path.join(video_dir, f"{video_id}_frame_with_bbox_fallback.jpg"), frame_with_rect)
+        cv2.imwrite(os.path.join(video_dir, f"{video_id}_roi_original.jpg"), roi)
     
     # Configurar rango de ángulos y escalas
     angulos = np.arange(rango_angulos[0], rango_angulos[1] + paso_angulo, paso_angulo)
@@ -229,6 +420,10 @@ def generar_mapa_calor(
     max_params_persp = (0, 100)
     max_text_persp = ""
     
+    # Crear directorio para muestras
+    samples_dir = os.path.join(video_dir, "samples")
+    os.makedirs(samples_dir, exist_ok=True)
+    
     # Iterar sobre todas las combinaciones de ángulos y escalas
     for i, angulo in enumerate(angulos):
         for j, escala in enumerate(escalas):
@@ -243,6 +438,11 @@ def generar_mapa_calor(
             factor = escala / 100.0
             roi_escalado = cv2.resize(roi_rotado, None, fx=factor, fy=factor)
             
+            # Guardar algunas muestras para depuración
+            if i % 5 == 0 and j % 5 == 0:
+                sample_path = os.path.join(samples_dir, f"rot_{angulo}_{escala}.jpg")
+                cv2.imwrite(sample_path, roi_escalado)
+            
             # 3. OCR en ROI con rotación
             resultados_rot = ocr_processor.process_multiscale(roi_escalado)
             if resultados_rot:
@@ -256,6 +456,11 @@ def generar_mapa_calor(
                 textos_rotacion[i, j] = texto_rot
                 conf_rotacion[i, j] = conf_rot
                 
+                # Guardar muestras con alta similitud
+                if sim_rot > 70 and (i % 3 == 0 and j % 3 == 0):
+                    sample_path = os.path.join(samples_dir, f"rot_{angulo}_{escala}_sim{sim_rot:.0f}_{texto_rot}.jpg")
+                    cv2.imwrite(sample_path, roi_escalado)
+                
                 # Actualizar máximo si es mejor
                 if sim_rot > max_sim_rot:
                     max_sim_rot = sim_rot
@@ -264,6 +469,11 @@ def generar_mapa_calor(
             
             # 4. Corrección de perspectiva
             roi_perspectiva, exito = corregir_distorsion(roi_escalado)
+            
+            # Guardar algunas muestras para depuración
+            if exito and i % 5 == 0 and j % 5 == 0:
+                sample_path = os.path.join(samples_dir, f"persp_{angulo}_{escala}.jpg")
+                cv2.imwrite(sample_path, roi_perspectiva)
             
             # 5. OCR en ROI con rotación + perspectiva
             if exito:
@@ -279,6 +489,11 @@ def generar_mapa_calor(
                     textos_perspectiva[i, j] = texto_persp
                     conf_perspectiva[i, j] = conf_persp
                     
+                    # Guardar muestras con alta similitud
+                    if sim_persp > 70 and (i % 3 == 0 and j % 3 == 0):
+                        sample_path = os.path.join(samples_dir, f"persp_{angulo}_{escala}_sim{sim_persp:.0f}_{texto_persp}.jpg")
+                        cv2.imwrite(sample_path, roi_perspectiva)
+                    
                     # Actualizar máximo si es mejor
                     if sim_persp > max_sim_persp:
                         max_sim_persp = sim_persp
@@ -286,6 +501,24 @@ def generar_mapa_calor(
                         max_text_persp = texto_persp
     
     print("\n")  # Salto de línea después de la barra de progreso
+    
+    # Guardar los mejores resultados
+    if max_sim_rot > 0:
+        ang_best, esc_best = max_params_rot
+        roi_rotado = corregir_rotacion(roi, ang_best)
+        factor = esc_best / 100.0
+        roi_best = cv2.resize(roi_rotado, None, fx=factor, fy=factor)
+        best_path = os.path.join(video_dir, f"{video_id}_best_rot_sim{max_sim_rot:.0f}.jpg")
+        cv2.imwrite(best_path, roi_best)
+        
+    if max_sim_persp > 0:
+        ang_best, esc_best = max_params_persp
+        roi_rotado = corregir_rotacion(roi, ang_best)
+        factor = esc_best / 100.0
+        roi_esc = cv2.resize(roi_rotado, None, fx=factor, fy=factor)
+        roi_best, _ = corregir_distorsion(roi_esc)
+        best_path = os.path.join(video_dir, f"{video_id}_best_persp_sim{max_sim_persp:.0f}.jpg")
+        cv2.imwrite(best_path, roi_best)
     
     # Mostrar mejores resultados
     print(f"Mejor resultado con rotación: {max_text_rot} (similitud: {max_sim_rot:.1f}%)")
@@ -297,12 +530,16 @@ def generar_mapa_calor(
     # Generar y guardar mapas de calor
     plt.figure(figsize=(12, 10))
     
+    # Configurar rangos de visualización fijos para la escala de colores
+    vmin = 0   # 0% similitud
+    vmax = 100 # 100% similitud
+    
     # Mapa de calor para rotación
     plt.subplot(2, 1, 1)
     plt.title(f"Mapa de calor - Rotación (max: {max_sim_rot:.1f}%)")
-    plt.imshow(similitud_rotacion, cmap='hot', interpolation='nearest', 
-               origin='lower', aspect='auto')
-    plt.colorbar(label="Similitud (%)")
+    im = plt.imshow(similitud_rotacion, cmap='hot', interpolation='nearest', 
+                    origin='lower', aspect='auto', vmin=vmin, vmax=vmax)
+    plt.colorbar(im, label="Similitud (%)")
     plt.xlabel("Escala (%)")
     plt.ylabel("Ángulo (°)")
     plt.xticks(np.arange(n_escalas)[::max(1, n_escalas//10)], 
@@ -318,9 +555,9 @@ def generar_mapa_calor(
     # Mapa de calor para perspectiva
     plt.subplot(2, 1, 2)
     plt.title(f"Mapa de calor - Perspectiva (max: {max_sim_persp:.1f}%)")
-    plt.imshow(similitud_perspectiva, cmap='hot', interpolation='nearest', 
-               origin='lower', aspect='auto')
-    plt.colorbar(label="Similitud (%)")
+    im = plt.imshow(similitud_perspectiva, cmap='hot', interpolation='nearest', 
+                    origin='lower', aspect='auto', vmin=vmin, vmax=vmax)
+    plt.colorbar(im, label="Similitud (%)")
     plt.xlabel("Escala (%)")
     plt.ylabel("Ángulo (°)")
     plt.xticks(np.arange(n_escalas)[::max(1, n_escalas//10)], 
@@ -334,11 +571,29 @@ def generar_mapa_calor(
     plt.plot(best_j_persp, best_i_persp, 'wo', markersize=10)
     
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, f"{video_id}_mapa_calor.png"), dpi=300)
+    plt.savefig(os.path.join(video_dir, f"{video_id}_mapa_calor.png"), dpi=300)
+    plt.savefig(os.path.join(output_dir, f"{video_id}_mapa_calor.png"), dpi=300)  # Copia en directorio principal
     plt.close()
+    
+    # Guardar archivo resumen para este video
+    with open(os.path.join(video_dir, f"{video_id}_resumen.txt"), "w") as f:
+        f.write(f"RESUMEN DE ANÁLISIS PARA: {video_name}\n\n")
+        f.write(f"Placa esperada: {placa_esperada}\n\n")
+        f.write("=== RESULTADOS CON ROTACIÓN ===\n")
+        f.write(f"Mejor texto detectado: {max_text_rot}\n")
+        f.write(f"Similitud: {max_sim_rot:.1f}%\n")
+        f.write(f"Ángulo óptimo: {max_params_rot[0]}°\n")
+        f.write(f"Escala óptima: {max_params_rot[1]}%\n\n")
+        f.write("=== RESULTADOS CON PERSPECTIVA ===\n")
+        f.write(f"Mejor texto detectado: {max_text_persp}\n")
+        f.write(f"Similitud: {max_sim_persp:.1f}%\n")
+        f.write(f"Ángulo óptimo: {max_params_persp[0]}°\n")
+        f.write(f"Escala óptima: {max_params_persp[1]}%\n")
     
     # Guardar datos para análisis agregado
     resultado = {
+        "video": video_name,
+        "placa_esperada": placa_esperada,
         "similitud_rotacion": similitud_rotacion,
         "textos_rotacion": textos_rotacion,
         "conf_rotacion": conf_rotacion,
@@ -403,12 +658,16 @@ def generar_mapa_calor_agregado(resultados: List[Dict], output_dir: str):
     # Generar mapas de calor agregados
     plt.figure(figsize=(12, 10))
     
+    # Configurar rangos de visualización fijos para la escala de colores
+    vmin = 0   # 0% similitud
+    vmax = 100 # 100% similitud
+    
     # Mapa agregado para rotación
     plt.subplot(2, 1, 1)
     plt.title(f"Mapa de calor agregado - Rotación (max: {max_sim_rot:.1f}%)")
-    plt.imshow(sim_rot_avg, cmap='hot', interpolation='nearest', 
-               origin='lower', aspect='auto')
-    plt.colorbar(label="Similitud promedio (%)")
+    im = plt.imshow(sim_rot_avg, cmap='hot', interpolation='nearest', 
+                    origin='lower', aspect='auto', vmin=vmin, vmax=vmax)
+    plt.colorbar(im, label="Similitud promedio (%)")
     plt.xlabel("Escala (%)")
     plt.ylabel("Ángulo (°)")
     plt.xticks(np.arange(n_escalas)[::max(1, n_escalas//10)], 
@@ -422,9 +681,9 @@ def generar_mapa_calor_agregado(resultados: List[Dict], output_dir: str):
     # Mapa agregado para perspectiva
     plt.subplot(2, 1, 2)
     plt.title(f"Mapa de calor agregado - Perspectiva (max: {max_sim_persp:.1f}%)")
-    plt.imshow(sim_persp_avg, cmap='hot', interpolation='nearest', 
-               origin='lower', aspect='auto')
-    plt.colorbar(label="Similitud promedio (%)")
+    im = plt.imshow(sim_persp_avg, cmap='hot', interpolation='nearest', 
+                    origin='lower', aspect='auto', vmin=vmin, vmax=vmax)
+    plt.colorbar(im, label="Similitud promedio (%)")
     plt.xlabel("Escala (%)")
     plt.ylabel("Ángulo (°)")
     plt.xticks(np.arange(n_escalas)[::max(1, n_escalas//10)], 
@@ -473,3 +732,15 @@ def generar_mapa_calor_agregado(resultados: List[Dict], output_dir: str):
             f.write(f"Parámetros recomendados: Ángulo={max_ang_persp:.2f}°, Escala={max_esc_persp:.2f}%\n")
         else:
             f.write(f"Parámetros recomendados: Ángulo={max_ang_rot:.2f}°, Escala={max_esc_rot:.2f}%\n")
+        
+        # Tabla de resultados por video
+        f.write("\n\n=== RESULTADOS INDIVIDUALES POR VIDEO ===\n\n")
+        f.write(f"{'Video':30} {'Placa':10} {'Rotación':20} {'Perspectiva':20}\n")
+        f.write("-" * 80 + "\n")
+        
+        for res in resultados:
+            video_name = os.path.basename(res["video"])[:25]
+            placa = res["placa_esperada"]
+            rot_info = f"{res['max_sim_rot']:.1f}% ({res['max_params_rot'][0]}°, {res['max_params_rot'][1]}%)"
+            persp_info = f"{res['max_sim_persp']:.1f}% ({res['max_params_persp'][0]}°, {res['max_params_persp'][1]}%)"
+            f.write(f"{video_name:30} {placa:10} {rot_info:20} {persp_info:20}\n")

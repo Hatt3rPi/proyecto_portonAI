@@ -211,6 +211,18 @@ def main(video_path=None):
     tracking y visualización, mientras delega snapshots/OCR a hilos.
     Si se pasa `video_path`, se utilizará ese archivo en lugar de RTSP.
     """
+    # Verificar si estamos en modo de extracción para QA
+    qa_extract_mode = False
+    qa_output_dir = None
+    
+    if '--qa_extract' in sys.argv or os.environ.get('QA_EXTRACT_MODE') == '1':
+        qa_extract_mode = True
+        qa_output_dir = os.environ.get('QA_OUTPUT_DIR')
+        if not qa_output_dir:
+            qa_output_dir = os.path.join(os.path.dirname(__file__), "debug", f"qa_temp_{int(time.time())}")
+            os.makedirs(qa_output_dir, exist_ok=True)
+        print(f"[QA] Modo de extracción activado. Guardando en: {qa_output_dir}")
+    
     # -------------------
     # 1. INICIALIZACIÓN
     # -------------------
@@ -518,6 +530,17 @@ def main(video_path=None):
                         # - Guardar frame completo
                         full_frame_filename = f"stream_{timestamp_ms}_{pid}_{text}.jpg"
                         cv2.imwrite(os.path.join(debug_dir, full_frame_filename), frame_ld.copy())
+                        
+                        # Si estamos en modo QA, guardar los datos necesarios
+                        if qa_extract_mode:
+                            cv2.imwrite(os.path.join(qa_output_dir, "frame_capture.jpg"), frame_ld.copy())
+                            cv2.imwrite(os.path.join(qa_output_dir, "roi_capture.jpg"), crop)
+                            with open(os.path.join(qa_output_dir, "bbox.txt"), "w") as f:
+                                f.write(f"{x1},{y1},{x2},{y2}")
+                            print(f"[QA] Datos guardados en {qa_output_dir}")
+                            # Terminar después de guardar los datos
+                            print("[QA] Extracción completada, finalizando")
+                            return  # Salir de la función después de extraer el ROI
                         
                         # 7) Envío de resultados al backend
                         if is_offline:
