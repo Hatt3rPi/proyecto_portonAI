@@ -132,13 +132,15 @@ def schedule_snapshot_and_ocr(plate_id, inst):
         ox1, oy1 = int(x1 * sx), int(y1 * sy)
         ox2, oy2 = int(x2 * sx), int(y2 * sy)
         
-        # Verificar coordenadas
+        # Añadir padding de 20px a cada lado, respetando los límites de la imagen
+        padding = 20
         h_snap, w_snap = hd_snap.shape[:2]
-        ox1 = max(0, min(ox1, w_snap-1))
-        oy1 = max(0, min(oy1, h_snap-1))
-        ox2 = max(0, min(ox2, w_snap))
-        oy2 = max(0, min(oy2, h_snap))
+        ox1 = max(0, min(ox1 - padding, w_snap-1))
+        oy1 = max(0, min(oy1 - padding, h_snap-1))
+        ox2 = max(0, min(ox2 + padding, w_snap))
+        oy2 = max(0, min(oy2 + padding, h_snap))
         
+        # Verificar coordenadas
         if ox2 <= ox1 or oy2 <= oy1:
             logging.warning(f"ROI inválido en snapshot para placa {plate_id}: {(ox1,oy1,ox2,oy2)}")
             return
@@ -478,11 +480,15 @@ def main(video_path=None):
                     continue
 
                 x1, y1, x2, y2 = inst.bbox
+                
+                # Añadir padding de 20px a cada lado, respetando los límites de la imagen
+                padding = 20
                 h_ld, w_ld = frame_ld.shape[:2]
-                x1 = max(0, min(x1, w_ld-1))
-                y1 = max(0, min(y1, h_ld-1))
-                x2 = max(0, min(x2, w_ld))
-                y2 = max(0, min(y2, h_ld))
+                x1 = max(0, x1 - padding)
+                y1 = max(0, y1 - padding)
+                x2 = min(w_ld, x2 + padding)
+                y2 = min(h_ld, y2 + padding)
+                
                 if x2 <= x1 or y2 <= y1:
                     logging.warning(f"[2.7] ROI inválido para OCR en placa {pid}: {(x1,y1,x2,y2)}")
                     continue

@@ -226,6 +226,14 @@ class PlateTrackerManager:
         """
         x1, y1, x2, y2 = bbox
         
+        # Añadir padding de 20px a cada lado, respetando los límites de la imagen
+        padding = 20
+        h, w = frame.shape[:2]
+        x1 = max(0, x1 - padding)
+        y1 = max(0, y1 - padding)
+        x2 = min(w, x2 + padding)
+        y2 = min(h, y2 + padding)
+        
         # 1. Extraer ROI original
         ROI_original = frame[y1:y2, x1:x2].copy()
         h_orig, w_orig = ROI_original.shape[:2]

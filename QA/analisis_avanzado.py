@@ -19,7 +19,7 @@ from typing import Dict, List, Tuple, Optional, Any
 import math
 import re
 from difflib import SequenceMatcher
-
+padding=20
 # Desactivar todos los mensajes de debug de matplotlib
 matplotlib_logger = logging.getLogger('matplotlib')
 matplotlib_logger.setLevel(logging.WARNING)
@@ -286,6 +286,14 @@ def ejecutar_main_para_extraer_roi(video_path: str) -> Tuple[np.ndarray, np.ndar
         if not best_box:
             # Último recurso: usar una región central como estimación
             h, w = frame.shape[:2]
+            x1 = max(0, x1 - padding)
+            y1 = max(0, y1 - padding)
+            x2 = min(w, x2 + padding)
+            y2 = min(h, y2 + padding)
+            
+            roi = frame[y1:y2, x1:x2].copy()
+            
+            return frame, roi, [x1, y1, x2, y2]
             x1, y1 = w // 4, h // 3
             x2, y2 = 3 * w // 4, 2 * h // 3
             best_box = [x1, y1, x2, y2]
