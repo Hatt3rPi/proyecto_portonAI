@@ -627,11 +627,20 @@ with open(consensus_analysis_file, "w") as f:
             f.write("\n" + "-"*50 + "\n\n")
 
 # Añadir estadísticas de oportunidades perdidas
-missed_opportunities_count = sum(1 for r in results.values() if r.get("has_match_in_scales", False) and r["failed"])
+missed_opportunities_count = sum(1 for fname, r in results.items() 
+                                if mapping.get(fname, {}).get("incluir_qa", True) and
+                                   r.get("has_match_in_scales", False) and r["failed"])
+
+# Determinar total de casos fallidos que fueron incluidos en QA
+total_failed_cases = len([r for fname, r in results.items() 
+                         if mapping.get(fname, {}).get("incluir_qa", True) and
+                            r["failed"] and r["detected"]])
+
 if missed_opportunities_count > 0:
     print(f"\n=== Análisis de oportunidades perdidas ===")
     print(f"Detecciones donde alguna escala tenía el texto correcto pero el consenso falló: {missed_opportunities_count}")
-    print(f"Esto representa un {missed_opportunities_count/len([r for r in results.values() if r['failed'] and r['detected']])*100:.2f}% de los casos fallidos")
+    if total_failed_cases > 0:
+        print(f"Esto representa un {missed_opportunities_count/total_failed_cases*100:.2f}% de los casos fallidos")
     print(f"Ver detalles completos en {consensus_analysis_file}")
 
 print(f"\n[QA] Resultados completos guardados en {output_path}")
