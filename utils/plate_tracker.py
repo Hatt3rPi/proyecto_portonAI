@@ -332,7 +332,7 @@ class PlateTrackerManager:
             else:
                 logging.debug(f"[TRACKER] Detección {i} descartada: {det}")
         
-        logging.debug(f"[TRACKER] Frame {self.frame_count}: {len(valid_detections)}/{len(detections)} detecciones válidas")
+        #logging.debug(f"[TRACKER] Frame {self.frame_count}: {len(valid_detections)}/{len(detections)} detecciones válidas")
         
         # Reemplazamos detections por las válidas
         detections = valid_detections
@@ -367,14 +367,14 @@ class PlateTrackerManager:
                         if old_bbox != instance.bbox:
                             dx = x1 - old_bbox[0]
                             dy = y1 - old_bbox[1]
-                            logging.debug(f"[TRACKER] {track_id} movimiento: {old_bbox} -> {instance.bbox} (dx={dx}, dy={dy})")
+                            #logging.debug(f"[TRACKER] {track_id} movimiento: {old_bbox} -> {instance.bbox} (dx={dx}, dy={dy})")
                     else:
                         success = False
-                        logging.debug(f"[TRACKER] {track_id} tracker fuera de límites o en exclusión: {(x1, y1, x2, y2)}")
+                        #logging.debug(f"[TRACKER] {track_id} tracker fuera de límites o en exclusión: {(x1, y1, x2, y2)}")
                 
                 if not success:
                     instance.missed_count += 1
-                    logging.debug(f"[TRACKER] {track_id} missed={instance.missed_count}/{self.max_missed}")
+                    #logging.debug(f"[TRACKER] {track_id} missed={instance.missed_count}/{self.max_missed}")
 
         # 3.5 Filtrar solapamientos: mantener solo ROI de mayor tamaño
         filtered = filter_overlapping_by_size(list(self.active_instances.values()))
