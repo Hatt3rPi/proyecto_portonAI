@@ -4,22 +4,36 @@ Módulo de procesamiento OCR y consenso para PortonAI
 Incluye la clase OCRProcessor y funciones auxiliares para validar placas.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 import logging
 import re
 import numpy as np
 import cv2
+import os
+import time
 
 from config import (
     CONSENSUS_MIN_LENGTH,
     CONSENSUS_EXPECTED_LENGTH_METHOD,
     CONSENSUS_FIXED_LENGTH,
     OCR_OPENAI_ACTIVATED,
-    QA_ANALISIS_AVANZADO,  # Añadimos la importación de esta variable
+    QA_ANALISIS_AVANZADO,
     ROI_ANGULO_ROTACION,
     ROI_ESCALA_FACTOR,
-    ROI_APLICAR_CORRECCION
+    ROI_APLICAR_CORRECCION,
+    USE_SUPER_RESOLUTION,
+    OCR_MIN_CONFIDENCE,
+    OCR_MULTISCALE_APPLY_ROTATION
 )
+
+# --- Importación condicional para mejorador de imágenes ---
+try:
+    from utils.image_enhancement import enhance_plate_image
+    IMAGE_ENHANCEMENT_AVAILABLE = True
+    logging.info("Módulo de mejoramiento de imagen disponible")
+except ImportError:
+    IMAGE_ENHANCEMENT_AVAILABLE = False
+    logging.warning("Módulo de mejoramiento de imagen no disponible")
 
 
 def is_valid_plate(plate: str) -> bool:
@@ -49,393 +63,644 @@ def is_valid_plate(plate: str) -> bool:
     # Provisoria: PR + 3 dígitos
     if re.fullmatch(r"PR\d{3}", p):
         return True
-    # Motocicletas: 5 chars, primero 3 letras, cualquier caracter alfanumérico, último dígito
-    #if re.fullmatch(r"[A-Z]{3}[A-Z0-9]\d", p):
-    #    return True
     return False
-
-
-def process_ocr_result_detailed(
-    ocr_result: Any,
-    model_ocr_names: List[str]
-) -> Dict[str, Any]:
-    """
-    Convierte resultados crudos de YOLO (OCR) en un dict estandarizado.
-    Args:
-        ocr_result: Resultado de llama a modelo_OCR.predict(...)
-        model_ocr_names: Lista de nombres de clases (caracteres)
-
-    Returns:
-        Dict con:
-          - 'ocr_text' (str)
-          - 'confidence' (float)
-          - 'predictions' (List[Dict])
-    """
-    if not ocr_result or len(ocr_result) == 0 or not hasattr(ocr_result[0], "boxes"):
-        return {"ocr_text": "", "confidence": 0.0, "predictions": []}
-    try:
-        batch = ocr_result[0]
-        preds = []
-        for box in batch.boxes:
-            try:
-                coords = box.xyxy[0].cpu().numpy() if hasattr(box.xyxy[0], "cpu") else box.xyxy[0]
-                x1, y1, x2, y2 = map(int, coords)
-                x_center = (x1 + x2) / 2.0
-                raw_conf = box.conf[0] if hasattr(box.conf, "__iter__") else box.conf
-                conf = float(raw_conf) * 100
-                cls_idx = int(box.cls[0]) if hasattr(box, "cls") else 0
-                char = model_ocr_names[cls_idx] if cls_idx < len(model_ocr_names) else ""
-                preds.append({"x": x_center, "confidence": conf, "char": char})
-            except Exception as e:
-                logging.warning(f"OCR prediction malformed, se omite: {e}")
-        preds.sort(key=lambda p: p["x"])
-        confidences = [p["confidence"] for p in preds]
-        geom_mean = float(np.prod(confidences) ** (1.0 / len(confidences))) if confidences else 0.0
-        text = "".join(p["char"] for p in preds)
-        return {"ocr_text": text, "confidence": geom_mean, "predictions": preds}
-    except Exception as e:
-        logging.error(f"Error en process_ocr_result_detailed: {e}")
-        return {"ocr_text": "", "confidence": 0.0, "predictions": []}
-
-
-def apply_consensus_voting(
-    ocr_results: List[Dict[str, Any]],
-    min_length: Optional[int] = None
-) -> Optional[Dict[str, Any]]:
-    """
-    Vota entre múltiples lecturas OCR para elegir la más frecuente y confiable.
-    Filtra también por validez de placa.
-    Args:
-        ocr_results: Lista de dicts con keys 'ocr_text' y 'confidence'
-        min_length: Longitud mínima de texto para considerar; si None, usa CONSENSUS_MIN_LENGTH
-
-    Returns:
-        Dict con:
-          - 'ocr_text' (str)
-          - 'confidence' (float)
-          - 'count' (int)
-        O None si no hay lecturas válidas.
-    """
-    length_threshold = min_length or CONSENSUS_MIN_LENGTH
-    # Solo textos con longitud mínima y válidos según is_valid_plate
-    valid = [r for r in ocr_results
-             if len(r.get("ocr_text","")) >= length_threshold
-             and is_valid_plate(r.get("ocr_text",""))]
-    if not valid:
-        if not ocr_results:
-            return None
-        # Escoge el de mayor confianza, pero validar primero
-        candidates = [r for r in ocr_results if is_valid_plate(r.get("ocr_text",""))]
-        if not candidates:
-            return None
-        best = max(candidates, key=lambda r: r.get("confidence", 0.0))
-        return {"ocr_text": best.get("ocr_text",""), "confidence": best.get("confidence",0.0), "count": 1}
-    tally = {}
-    for r in valid:
-        txt = r["ocr_text"].upper().strip()
-        info = tally.setdefault(txt, {"count":0, "total_conf":0.0})
-        info["count"] += 1
-        info["total_conf"] += r.get("confidence",0.0)
-    best_text, best_info = "", {"count":-1, "avg_conf":-1.0}
-    for txt, info in tally.items():
-        avg_conf = info["total_conf"] / info["count"]
-        if info["count"] > best_info["count"] or (info["count"] == best_info["count"] and avg_conf > best_info["avg_conf"]):
-            best_text, best_info = txt, {"count": info["count"], "avg_conf": avg_conf}
-    return {"ocr_text": best_text, "confidence": best_info["avg_conf"], "count": best_info["count"]}
-
-
-def consensus_by_positions(
-    ocr_results: List[Dict[str, Any]],
-    expected_length: Optional[int] = None
-) -> Optional[Dict[str, Any]]:
-    """
-    Construye la matrícula carácter a carácter mediante votación por posición.
-
-    Args:
-        ocr_results: Lista de dicts con 'predictions' (x, confidence, char)
-        expected_length: Longitud esperada; si None, calculada según config
-
-    Returns:
-        Dict con 'ocr_text' y 'confidence', o None si falla.
-    """
-    filtered = [r for r in ocr_results if r.get("ocr_text","" )]
-    if not filtered:
-        return None
-    if expected_length is None:
-        lengths = [len(r["ocr_text"]) for r in filtered]
-        method = CONSENSUS_EXPECTED_LENGTH_METHOD.lower()
-        try:
-            if method == "mode":
-                from statistics import mode
-                expected_length = mode(lengths)
-            elif method == "median":
-                expected_length = int(np.median(lengths))
-            elif method == "fixed" and CONSENSUS_FIXED_LENGTH:
-                expected_length = CONSENSUS_FIXED_LENGTH
-            else:
-                expected_length = int(np.median(lengths))
-        except Exception:
-            expected_length = int(np.median(lengths))
-    letter_stats = [{} for _ in range(expected_length)]
-    for r in filtered:
-        for i, pred in enumerate(r.get("predictions", [])):
-            if i >= expected_length:
-                break
-            char = pred.get("char","" ).upper().strip()
-            conf = pred.get("confidence",0.0)
-            if not char:
-                continue
-            stats = letter_stats[i]
-            entry = stats.setdefault(char, {"count":0, "total_conf":0.0})
-            entry["count"]     += 1
-            entry["total_conf"] += conf
-    result_chars = []
-    confidences = []
-    for stats in letter_stats:
-        if not stats:
-            result_chars.append("?")
-            confidences.append(0.0)
-        else:
-            best_char, best_avg = "?", -1.0
-            for char, info in stats.items():
-                avg_conf = info["total_conf"]/info["count"]
-                if avg_conf > best_avg:
-                    best_char, best_avg = char, avg_conf
-            result_chars.append(best_char)
-            confidences.append(best_avg)
-    text = "".join(result_chars)
-    avg_conf = float(np.mean(confidences)) if confidences else 0.0
-    return {"ocr_text": text, "confidence": avg_conf}
-
-
-def final_consensus(
-    consensus_list: List[Dict[str, Any]]
-) -> Dict[str, Any]:
-    """
-    Combina múltiples consensos para definir la matrícula final.
-
-    Args:
-        consensus_list: Liste de dicts con 'ocr_text' y 'confidence'
-
-    Returns:
-        Dict con 'ocr_text' y 'confidence'.
-    """
-    if not consensus_list:
-        return {"ocr_text": "", "confidence": 0.0}
-    freq = {}
-    for c in consensus_list:
-        txt = c.get("ocr_text","" )
-        freq[txt] = freq.get(txt,0) + 1
-    max_f = max(freq.values(), default=0)
-    cands = [txt for txt,f in freq.items() if f==max_f]
-    filtered = [c for c in consensus_list if c.get("ocr_text","" ) in cands]
-    best = max(filtered, key=lambda c: c.get("confidence",0.0))
-    return {"ocr_text": best.get("ocr_text",""), "confidence": best.get("confidence",0.0)}
 
 
 class OCRProcessor:
     """
-    Clase que centraliza flujos de OCR y consenso:
-      - process_multiscale: OCR en múltiples escalas desde frame stream
-      - process_plate_image: OCR de snapshot o OpenAI
+    Procesador OCR para reconocimiento de placas vehiculares.
+    Soporta múltiples estrategias, incluyendo multiescala, rotación
+    y corrección de perspectiva.
     """
-    def __init__(self, model_ocr, model_ocr_names):
-        self.model_ocr = model_ocr
-        self.names     = model_ocr_names
-        # Para guardar los callbacks de progreso
-        self.progress_callback = None
-
-    def set_progress_callback(self, callback):
-        """Establece un callback para reportar progreso"""
-        self.progress_callback = callback
-
-    def process_multiscale(self, plate_img: Any, fixed_angle=None, fixed_scale=None, test_mode=False, 
-                          angle_range=None, scale_range=None, angle_step=None, scale_step=None) -> List[Dict[str, Any]]:
+    
+    def __init__(self, 
+                model=None, 
+                names=None, 
+                apply_rotation=OCR_MULTISCALE_APPLY_ROTATION):
+        self.model = model  # Modelo YOLO para OCR
+        self.names = names  # Clases del modelo OCR
+        self.apply_rotation = apply_rotation
+        self.progress_callback = None  # Callback para reportar progreso en QA
+        
+        # Valores por defecto para multiescala
+        self.scales = [80, 90, 100, 110, 120]
+        if self.apply_rotation:
+            self.rotation_angles = [-5, -2.5, 0, 2.5, 5]
+        else:
+            self.rotation_angles = [0]
+            
+    def set_progress_callback(self, callback_fn: Callable):
         """
-        Ejecuta OCR en escalas del 50% al 100% por stream.
-        Descarta lecturas no válidas antes de agregarlas.
+        Establece una función de callback para reportar progreso.
+        Utilizado principalmente en modo QA.
+        
         Args:
-            plate_img: ROI de la placa
-            fixed_angle: Ángulo fijo para rotar (None = usar ROI_ANGULO_ROTACION)
-            fixed_scale: Factor de escala fijo (None = usar ROI_ESCALA_FACTOR)
-            test_mode: Si es True, realiza pruebas en múltiples ángulos/escalas en vez de usar valores fijos
-            angle_range: Tupla (min, max) de ángulos a probar en modo test
-            scale_range: Tupla (min, max) de factores de escala a probar en modo test
-            angle_step: Paso entre ángulos en modo test
-            scale_step: Paso entre escalas en modo test
-        Returns:
-            Lista de dicts procesados por process_ocr_result_detailed
+            callback_fn: Función que recibe (iteración_actual, total_iteraciones)
         """
-        # Si llega un ROI vacío, no intentamos ningún resize
-        if plate_img is None or plate_img.size == 0:
+        self.progress_callback = callback_fn
+
+    def extract_plate_text(self, plate_region: np.ndarray) -> Dict:
+        """
+        Extrae texto de una imagen de placa vehicular usando el modelo OCR.
+        
+        Args:
+            plate_region: Imagen de la placa recortada
+            
+        Returns:
+            Dict con resultados del OCR
+        """
+        try:
+            # Si el modelo no está cargado, devolver resultado vacío
+            if self.model is None:
+                return {"ocr_text": "", "confidence": 0.0}
+                
+            # Inferencia con el modelo OCR
+            results = self.model.predict(plate_region, verbose=False)
+            
+            if len(results) == 0 or len(results[0].boxes) == 0:
+                return {"ocr_text": "", "confidence": 0.0}
+                
+            # Ordenar detecciones por coordenada X
+            boxes = results[0].boxes
+            box_coords = boxes.xyxy.cpu().numpy()
+            
+            if len(box_coords) == 0:
+                return {"ocr_text": "", "confidence": 0.0}
+                
+            # Ordenar por posición X para leer de izquierda a derecha
+            sorted_indices = np.argsort(box_coords[:, 0])
+            
+            # Extraer caracteres y confianzas ordenados
+            text = ""
+            total_conf = 0.0
+            
+            for idx in sorted_indices:
+                cls_id = int(boxes.cls[idx].item())
+                conf = float(boxes.conf[idx].item())
+                
+                if cls_id < len(self.names):
+                    char = self.names[cls_id]
+                    text += char
+                    total_conf += conf
+            
+            avg_conf = total_conf / len(sorted_indices) if sorted_indices.size > 0 else 0.0
+            
+            # Empaquetar resultados
+            return {
+                "ocr_text": text,
+                "confidence": avg_conf * 100,  # Convertir a porcentaje
+                "raw_results": results
+            }
+            
+        except Exception as e:
+            logging.error(f"Error en OCR: {e}")
+            return {"ocr_text": "", "confidence": 0.0, "error": str(e)}
+            
+    def rotate_image(self, image: np.ndarray, angle: float) -> np.ndarray:
+        """
+        Rota una imagen por el ángulo especificado.
+        
+        Args:
+            image: Imagen a rotar
+            angle: Ángulo en grados
+            
+        Returns:
+            Imagen rotada
+        """
+        if angle == 0:
+            return image.copy()
+            
+        # Obtener dimensiones
+        height, width = image.shape[:2]
+        center = (width // 2, height // 2)
+        
+        # Matriz de rotación
+        rot_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+        
+        # Aplicar rotación
+        rotated = cv2.warpAffine(
+            image, rot_matrix, (width, height),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0)
+        )
+        
+        return rotated
+        
+    def scale_image(self, image: np.ndarray, scale_percent: float) -> np.ndarray:
+        """
+        Escala una imagen por el porcentaje especificado.
+        
+        Args:
+            image: Imagen a escalar
+            scale_percent: Porcentaje de escala (100 = sin cambios)
+            
+        Returns:
+            Imagen escalada
+        """
+        if scale_percent == 100:
+            return image.copy()
+            
+        # Calcular nuevas dimensiones
+        scale_factor = scale_percent / 100.0
+        width = int(image.shape[1] * scale_factor)
+        height = int(image.shape[0] * scale_factor)
+        
+        # Redimensionar imagen
+        resized = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA if scale_factor < 1 else cv2.INTER_LINEAR)
+        
+        return resized
+        
+    def is_valid_plate(self, text: str) -> bool:
+        """
+        Verifica si el texto detectado corresponde a una placa válida.
+        
+        Args:
+            text: Texto detectado
+            
+        Returns:
+            True si la placa parece válida, False en caso contrario
+        """
+        if not text or len(text) < 5:
+            return False
+            
+        # Patrón básico para placas chilenas: LLLLNN (4 letras, 2 números)
+        # o patrones LLNNNN (2 letras, 4 números), y otros más nuevos
+        
+        # Primero eliminar cualquier espacio en blanco
+        text = text.strip()
+        
+        # Patrones comunes de placas chilenas
+        patterns = [
+            r'^[BCDFGHJKLMNPQRSTVWXYZ]{2}[0-9]{4}$',  # Formato AA1234
+            r'^[BCDFGHJKLMNPQRSTVWXYZ]{4}[0-9]{2}$',  # Formato AAAA12
+            r'^[BCDFGHJKLMNPQRSTVWXYZ]{3}[0-9]{3}$',  # Formato AAA123
+            r'^[BCDFGHJKLMNPQRSTVWXYZ]{3}[0-9]{2}[BCDFGHJKLMNPQRSTVWXYZ]{1}$',  # AAANNA
+        ]
+        
+        for pattern in patterns:
+            if re.match(pattern, text):
+                return True
+                
+        return False
+
+    def process_multiscale(self, 
+                          roi: np.ndarray, 
+                          scales: List[int] = None,
+                          rotation_angles: List[float] = None,
+                          track_id: str = None,
+                          image_enhancer = None) -> List[Dict]:
+        """
+        Procesa un ROI de placa utilizando múltiples escalas y ángulos de rotación.
+        
+        Args:
+            roi: Imagen de la placa (región de interés)
+            scales: Lista de escalas a probar (en porcentaje, 100 = tamaño original)
+            rotation_angles: Lista de ángulos a probar (en grados)
+            track_id: ID del tracker para usar el mejorador de imágenes
+            image_enhancer: Mejorador de imágenes para aplicar superresolución
+            
+        Returns:
+            Lista de resultados OCR ordenados por confianza
+        """
+        if roi is None or roi.size == 0:
             return []
             
+        # Usar valores por defecto si no se especifican
+        if scales is None:
+            scales = self.scales
+            
+        if rotation_angles is None:
+            rotation_angles = self.rotation_angles
+            
         results = []
+        total_iterations = len(scales) * len(rotation_angles)
+        current_iteration = 0
         
-        # Si estamos en modo prueba, realizamos un barrido de parámetros
-        if test_mode and angle_range and scale_range:
-            angulos = np.arange(angle_range[0], angle_range[1] + angle_step, angle_step)
-            escalas = np.arange(scale_range[0], scale_range[1] + scale_step, scale_step)
-            
-            for angulo in angulos:
-                for escala in escalas:
-                    try:
-                        # 1. Aplicar rotación
-                        if abs(angulo) > 0.1:  # Si el ángulo no es aproximadamente 0
-                            h, w = plate_img.shape[:2]
-                            center = (w // 2, h // 2)
-                            M = cv2.getRotationMatrix2D(center, angulo, 1.0)
-                            roi_rotado = cv2.warpAffine(plate_img, M, (w, h), 
-                                            borderMode=cv2.BORDER_CONSTANT,
-                                            borderValue=(0, 0, 0))
-                        else:
-                            roi_rotado = plate_img.copy()
-                        
-                        # 2. Aplicar escala
-                        if abs(escala/100.0 - 1.0) > 0.01:  # Si el factor no es aproximadamente 1
-                            factor = escala/100.0
-                            roi_escalado = cv2.resize(roi_rotado, None, fx=factor, fy=factor)
-                        else:
-                            roi_escalado = roi_rotado
-                        
-                        # OCR procesamiento
-                        ocr_out = self.model_ocr.predict(roi_escalado, device='cuda:0', verbose=False)
-                        proc = process_ocr_result_detailed(ocr_out, self.names)
-                        
-                        text = proc.get('ocr_text', '').strip()
-                        valid = is_valid_plate(text)
-                        
-                        if text and valid:
-                            proc['angle'] = angulo
-                            proc['scale'] = escala
-                            results.append(proc)
+        # Inicializar contador de iteraciones para callback de progreso
+        for scale in scales:
+            for angle in rotation_angles:
+                # Aplicar transformaciones
+                try:
+                    # Escalar imagen
+                    scaled = self.scale_image(roi, scale)
                     
-                    except Exception:
-                        # Suprimir errores completamente
-                        pass
-            
-            # Reportar progreso si hay un callback configurado
-            if self.progress_callback:
-                self.progress_callback(len(angulos) * len(escalas), len(angulos) * len(escalas))
+                    # Rotar imagen
+                    if angle != 0:
+                        transformed = self.rotate_image(scaled, angle)
+                    else:
+                        transformed = scaled
+                        
+                    # Ejecutar OCR
+                    ocr_result = self.extract_plate_text(transformed)
+                    
+                    # Añadir metadatos sobre la transformación
+                    ocr_result["scale"] = scale
+                    ocr_result["angle"] = angle
+                    ocr_result["valid"] = self.is_valid_plate(ocr_result.get("ocr_text", ""))
+                    
+                    # Añadir a resultados
+                    results.append(ocr_result)
+                    
+                    # Logging detallado
+                    text = ocr_result.get("ocr_text", "")
+                    conf = ocr_result.get("confidence", 0.0)
+                    valid = ocr_result.get("valid", False)
+                    logging.debug(f"[OCR-MULTIESCALA] Escala {scale}%: '{text}' válido={valid} conf={conf:.2f}")
+                    
+                except Exception as e:
+                    logging.error(f"Error en proceso multiescala: {e}")
                 
-            return results
-            
-        # Aplicar la corrección de ángulo y escala óptima definida en config.py o parámetros fijos
-        if ROI_APLICAR_CORRECCION or fixed_angle is not None or fixed_scale is not None:
+                # Actualizar progreso si hay callback
+                current_iteration += 1
+                if self.progress_callback:
+                    self.progress_callback(current_iteration, total_iterations)
+        
+        logging.debug(f"[OCR-MULTIESCALA] Terminado procesamiento con {len(results)} combinaciones")
+        
+        # Si no se encontraron resultados válidos y tenemos un enhancer disponible, intentar SR
+        if (not any(r.get("valid", False) for r in results) and 
+            track_id is not None and image_enhancer is not None):
             try:
-                # Determinar ángulo a usar
-                angle_to_use = fixed_angle if fixed_angle is not None else ROI_ANGULO_ROTACION
-                
-                # 1. Aplicar rotación (si es necesario)
-                if abs(angle_to_use) > 0.1:  # Si el ángulo no es aproximadamente 0
-                    h, w = plate_img.shape[:2]
-                    center = (w // 2, h // 2)
-                    M = cv2.getRotationMatrix2D(center, angle_to_use, 1.0)
-                    plate_img = cv2.warpAffine(plate_img, M, (w, h), 
-                                            borderMode=cv2.BORDER_CONSTANT,
-                                            borderValue=(0, 0, 0))
-                
-                # Determinar escala a usar
-                scale_to_use = fixed_scale if fixed_scale is not None else ROI_ESCALA_FACTOR
-                
-                # 2. Aplicar escala óptima
-                if abs(scale_to_use - 1.0) > 0.01:  # Si el factor no es aproximadamente 1
-                    plate_img = cv2.resize(plate_img, None, fx=scale_to_use, fy=scale_to_use)
-                
-                # 3. Procesar la imagen corregida
-                ocr_out = self.model_ocr.predict(plate_img, device='cuda:0', verbose=False)
-                proc = process_ocr_result_detailed(ocr_out, self.names)
-                
-                text = proc.get('ocr_text', '').strip()
-                valid = is_valid_plate(text)
-                
-                if text and valid:
-                    proc['coverage'] = 100  # Marcamos como procesada con parámetros óptimos
-                    proc['optimized'] = True
-                    proc['angle'] = angle_to_use
-                    proc['scale'] = scale_to_use * 100 if scale_to_use < 10 else scale_to_use  # Normalizar escala a porcentaje
-                    results.append(proc)
-                    return results  # Si tenemos un resultado válido con los parámetros óptimos, lo retornamos directamente
-            
+                logging.info(f"[OCR-FALLBACK] Intentando método de superresolución para track_id={track_id}")
+                enhanced_roi, method = image_enhancer.get_enhanced_roi(track_id)
+                if enhanced_roi is not None:
+                    # Procesar el ROI mejorado de la misma manera
+                    sr_results = self.process_multiscale(enhanced_roi, scales, rotation_angles)
+                    # Añadir información sobre el método de mejora
+                    for r in sr_results:
+                        r["enhancement_method"] = method
+                    
+                    # Añadir resultados de superresolución a los originales
+                    results.extend(sr_results)
+                    
+                    # Guardar una copia para depuración
+                    debug_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "debug")
+                    if not os.path.exists(debug_dir):
+                        os.makedirs(debug_dir)
+                    timestamp = int(time.time() * 1000)
+                    filename = f"{timestamp}_{track_id}_enhanced_{method}.jpg"
+                    cv2.imwrite(os.path.join(debug_dir, filename), enhanced_roi)
+                    
+                    logging.info(f"[OCR-FALLBACK] {len(sr_results)} resultados adicionales con método {method}")
             except Exception as e:
-                logging.warning(f"Error al aplicar corrección óptima: {e}")
-                # Continuamos con el enfoque multi-escala tradicional
+                logging.error(f"[OCR-FALLBACK] Error en proceso de superresolución: {e}")
         
-        # Enfoque multi-escala tradicional (como fallback o si no se aplica corrección)
-        total_scales = 11  # Del 50% al 100% en pasos de 5% (11 escalas)
-        
-        for scale in range(50, 105, 5):
+        # Nueva funcionalidad: si no se obtuvo ningún resultado válido con multiescala,
+        # intentar mejorar la imagen con RealESRGAN y volver a procesar
+        if not results and IMAGE_ENHANCEMENT_AVAILABLE:
             try:
-                fx = fy = scale / 100.0
-                roi = cv2.resize(plate_img, None, fx=fx, fy=fy)
+                logging.info("[OCR] Intentando mejoramiento de imagen con RealESRGAN...")
+                # Mejorar imagen usando RealESRGAN
+                enhanced_img, success = enhance_plate_image(roi)
                 
-                # OCR procesamiento
-                ocr_out = self.model_ocr.predict(roi, device='cuda:0', verbose=False)
-                proc = process_ocr_result_detailed(ocr_out, self.names)
-                text = proc.get('ocr_text', '').strip()
-                
-                # Filtrar resultados inválidos
-                valid = is_valid_plate(text)
-                if not text or not valid:
-                    continue
-                
-                proc['coverage'] = scale
-                proc['optimized'] = False
-                proc['angle'] = 0  # Sin rotación en el método tradicional
-                proc['scale'] = scale
-                results.append(proc)
-                
-            except Exception:
-                # Suprimir errores completamente
-                pass
-            
-            # Reportar progreso si hay un callback configurado
-            if self.progress_callback:
-                self.progress_callback(scale - 50 + 1, 11)  # +1 porque contamos desde 1
+                if success:
+                    logging.info("[OCR] Imagen mejorada exitosamente, procesando con multiescala...")
+                    
+                    # Intentar OCR en la imagen mejorada con multiescala estándar
+                    for scale in scales:
+                        for angle in rotation_angles:
+                            try:
+                                # Escalar imagen
+                                scaled = self.scale_image(enhanced_img, scale)
+                                
+                                # Rotar imagen
+                                if angle != 0:
+                                    transformed = self.rotate_image(scaled, angle)
+                                else:
+                                    transformed = scaled
+                                    
+                                # Ejecutar OCR
+                                ocr_result = self.extract_plate_text(transformed)
+                                
+                                # Añadir metadatos sobre la transformación
+                                ocr_result["scale"] = scale
+                                ocr_result["angle"] = angle
+                                ocr_result["valid"] = self.is_valid_plate(ocr_result.get("ocr_text", ""))
+                                ocr_result["enhanced"] = True  # Indicador de que se usó mejoramiento
+                                
+                                # Añadir a resultados
+                                results.append(ocr_result)
+                                
+                                # Logging detallado
+                                text = ocr_result.get("ocr_text", "")
+                                conf = ocr_result.get("confidence", 0.0)
+                                valid = ocr_result.get("valid", False)
+                                logging.debug(f"[OCR-MEJORADO] Escala {scale}%: '{text}' válido={valid} conf={conf:.2f}")
+                                
+                            except Exception as e:
+                                logging.error(f"Error en proceso multiescala mejorado: {e}")
+            except Exception as e:
+                logging.error(f"[OCR] Error al intentar mejoramiento de imagen: {e}")
         
-        return results
+        # Ordenar resultados por confianza
+        sorted_results = sorted(results, key=lambda x: x.get("confidence", 0.0), reverse=True)
+        
+        return sorted_results
 
-    def process_plate_image(
-        self,
-        plate_img: Any,
-        use_openai: bool = False
-    ) -> Dict[str, Any]:
+    def process_plate_image(self, 
+                           plate_image: np.ndarray,
+                           use_multiscale: bool = True,
+                           use_openai: bool = False,
+                           track_id: str = None,
+                           image_enhancer = None) -> Dict:
         """
-        Ejecuta OCR sobre snapshot HD o usa OpenAI.
+        Procesa una imagen de placa vehicular con múltiples estrategias.
+        
         Args:
-            plate_img: Imagen de la placa (snapshot o frame)
-            use_openai: Si True, usar OpenAI en lugar de YOLO
+            plate_image: Imagen de la placa recortada
+            use_multiscale: Si es True, utiliza procesamiento multiescala
+            use_openai: Si es True, utiliza OpenAI para reconocimiento
+            track_id: ID del tracker para usar el mejorador de imágenes
+            image_enhancer: Mejorador de imágenes para aplicar superresolución
+            
         Returns:
-            Dict resultante con 'ocr_text' y 'confidence'
+            Dict con resultados del OCR
         """
-        if use_openai:
-            from scripts.monitoreo_patentes.openai_plate_reader import read_plate_openai
-            text = read_plate_openai(plate_img, None) or ""
-            if len(text) >= CONSENSUS_MIN_LENGTH and is_valid_plate(text):
-                return {"ocr_text": text, "confidence": 100.0}
-            logging.debug(f"OCR OpenAI descarta '{text}' inválido")
+        if plate_image is None or plate_image.size == 0:
             return {"ocr_text": "", "confidence": 0.0}
-        ocr_out = self.model_ocr.predict(plate_img, device='cuda:0', verbose=False)
-        res = process_ocr_result_detailed(ocr_out, self.names)
-        text = res.get('ocr_text', '').strip()
-        confidence = res.get('confidence', 0.0)
-        if len(text) >= CONSENSUS_MIN_LENGTH and is_valid_plate(text):
-            return {"ocr_text": text, "confidence": confidence}
-        logging.debug(f"OCR tradicional descarta '{text}' inválido")
-
-        # Si está habilitado OpenAI y la confianza es baja, intentar con OpenAI
-        if OCR_OPENAI_ACTIVATED and use_openai and confidence < 0.8:
-            try:
-                from scripts.monitoreo_patentes.openai_plate_reader import read_plate_openai
-                text = read_plate_openai(plate_img, None) or ""
-                if len(text) >= CONSENSUS_MIN_LENGTH and is_valid_plate(text):
-                    return {"ocr_text": text, "confidence": 100.0}
-                logging.debug(f"OCR OpenAI descarta '{text}' inválido")
-            except Exception as e:
-                logging.warning(f"Error procesando con OpenAI: {e}")
+            
+        # 1. Método multiescala (es el más completo)
+        if use_multiscale:
+            results = self.process_multiscale(plate_image, track_id=track_id, image_enhancer=image_enhancer)
+            
+            if results:
+                # Filtrar por resultados válidos
+                valid_results = [r for r in results if r.get("valid", False)]
+                
+                if valid_results:
+                    # Ordenar por confianza
+                    valid_results.sort(key=lambda x: x.get("confidence", 0.0), reverse=True)
+                    best = valid_results[0]
+                else:
+                    # Si no hay resultados válidos, tomar el de mayor confianza
+                    results.sort(key=lambda x: x.get("confidence", 0.0), reverse=True)
+                    best = results[0]
+                    
+                return best
         
-        return {
-            "ocr_text": text,
-            "confidence": confidence,
-            "raw_output": res
-        }
+        # 2. Método simple (como fallback)
+        result = self.extract_plate_text(plate_image)
+        
+        # 3. Si tenemos superresolución disponible y aún no ha sido utilizado (sin resultados)
+        if (track_id and image_enhancer and 
+            (not result or result.get("ocr_text", "") == "" or 
+             result.get("confidence", 0) < OCR_MIN_CONFIDENCE)):
+            try:
+                enhanced_roi, method = image_enhancer.get_enhanced_roi(track_id)
+                if enhanced_roi is not None:
+                    enhanced_result = self.extract_plate_text(enhanced_roi)
+                    enhanced_result["enhancement_method"] = method
+                    # Si el resultado mejorado es mejor, usarlo
+                    if enhanced_result.get("confidence", 0) > result.get("confidence", 0):
+                        result = enhanced_result
+            except Exception as e:
+                logging.error(f"[OCR] Error en proceso de superresolución: {e}")
+        
+        # 4. Si está habilitado y configurado, usar OpenAI
+        if use_openai and (not result or result.get("confidence", 0) < OCR_MIN_CONFIDENCE):
+            try:
+                from utils.openai_ocr import recognize_plate_text
+                openai_result = recognize_plate_text(plate_image)
+                if openai_result:
+                    result = {**result, **openai_result, "ocr_method": "openai"}
+            except Exception as e:
+                logging.error(f"[OCR] Error en OpenAI OCR: {e}")
+        
+        return result
+
+def apply_consensus_voting(results: List[Dict], min_length: int = CONSENSUS_MIN_LENGTH) -> Optional[Dict]:
+    """
+    Aplica un algoritmo de consenso para determinar el texto más probable
+    entre múltiples resultados OCR de diferentes escalas/ángulos.
+    
+    Args:
+        results: Lista de resultados OCR (Dict) de diferentes escalas
+        min_length: Longitud mínima para incluir una lectura en el consenso
+        
+    Returns:
+        El resultado con el mejor consenso, o None si no hay consenso
+    """
+    if not results:
+        return None
+        
+    # Filtrar resultados vacíos o muy cortos
+    valid_results = []
+    for r in results:
+        text = r.get("ocr_text", "").strip()
+        if len(text) >= min_length:
+            valid_results.append(r)
+            
+    if not valid_results:
+        return None
+        
+    # Si solo hay un resultado válido, devolverlo directamente
+    if len(valid_results) == 1:
+        return valid_results[0]
+        
+    # Contar frecuencias de cada texto
+    text_counts = {}
+    for r in valid_results:
+        text = r.get("ocr_text", "").strip()
+        if text not in text_counts:
+            text_counts[text] = []
+        text_counts[text].append(r)
+        
+    # Encontrar el texto más frecuente
+    max_count = 0
+    consensus_text = None
+    consensus_results = []
+    
+    for text, entries in text_counts.items():
+        if len(entries) > max_count:
+            max_count = len(entries)
+            consensus_text = text
+            consensus_results = entries
+            
+    # Si no hay consenso claro (igual número de ocurrencias), usar el de mayor confianza
+    if max_count <= 1:
+        return max(valid_results, key=lambda r: r.get("confidence", 0.0))
+        
+    # Entre los resultados con el mismo texto, elegir el de mayor confianza
+    best_result = max(consensus_results, key=lambda r: r.get("confidence", 0.0))
+    
+    # Calcular confianza promedio para este consenso
+    avg_conf = sum(r.get("confidence", 0.0) for r in consensus_results) / len(consensus_results)
+    
+    # Añadir información de consenso al resultado
+    result = dict(best_result)
+    result["consensus_count"] = max_count
+    result["total_results"] = len(valid_results)
+    result["average_conf"] = avg_conf
+    
+    return result
+
+def consensus_by_positions(results: List[Dict]) -> Optional[str]:
+    """
+    Aplica un algoritmo de consenso por posiciones para determinar
+    el texto más probable caracter por caracter.
+    
+    Args:
+        results: Lista de resultados OCR
+        
+    Returns:
+        Texto consensuado por posiciones, o None si no hay consenso
+    """
+    if not results:
+        return None
+        
+    # Determinar la longitud esperada de la placa
+    if CONSENSUS_EXPECTED_LENGTH_METHOD == 'fixed' and CONSENSUS_FIXED_LENGTH is not None:
+        expected_length = CONSENSUS_FIXED_LENGTH
+    else:
+        # Extraer longitudes de cada resultado
+        lengths = [len(r.get("ocr_text", "").strip()) for r in results]
+        if not lengths:
+            return None
+            
+        if CONSENSUS_EXPECTED_LENGTH_METHOD == 'mode':
+            # Calcular la moda (valor más frecuente)
+            counts = {}
+            for l in lengths:
+                counts[l] = counts.get(l, 0) + 1
+            expected_length = max(counts.items(), key=lambda x: x[1])[0]
+        else:  # 'median'
+            # Calcular la mediana
+            sorted_lengths = sorted(lengths)
+            mid = len(sorted_lengths) // 2
+            if len(sorted_lengths) % 2 == 0:
+                expected_length = int((sorted_lengths[mid-1] + sorted_lengths[mid]) / 2)
+            else:
+                expected_length = sorted_lengths[mid]
+    
+    # Matriz para conteo de caracteres en cada posición
+    char_counts = [{} for _ in range(expected_length)]
+    
+    # Contar ocurrencias de cada carácter en cada posición
+    for r in results:
+        text = r.get("ocr_text", "").strip()
+        conf = r.get("confidence", 0.0)
+        
+        for pos, char in enumerate(text):
+            if pos >= expected_length:
+                break
+                
+            if char not in char_counts[pos]:
+                char_counts[pos][char] = {"count": 0, "conf_sum": 0.0}
+                
+            char_counts[pos][char]["count"] += 1
+            char_counts[pos][char]["conf_sum"] += conf
+    
+    # Determinar el carácter más probable para cada posición
+    consensus = []
+    for pos_counts in char_counts:
+        if not pos_counts:
+            consensus.append("?")  # Sin datos para esta posición
+            continue
+            
+        # Encontrar el carácter con mayor conteo
+        max_count = 0
+        best_chars = []
+        
+        for char, data in pos_counts.items():
+            if data["count"] > max_count:
+                max_count = data["count"]
+                best_chars = [char]
+            elif data["count"] == max_count:
+                best_chars.append(char)
+                
+        if len(best_chars) == 1:
+            consensus.append(best_chars[0])
+        else:
+            # Desempate por confianza promedio
+            best_char = None
+            best_avg_conf = 0.0
+            
+            for char in best_chars:
+                data = pos_counts[char]
+                avg_conf = data["conf_sum"] / data["count"]
+                
+                if avg_conf > best_avg_conf:
+                    best_avg_conf = avg_conf
+                    best_char = char
+                    
+            consensus.append(best_char if best_char else "?")
+    
+    return "".join(consensus)
+
+def final_consensus(results: List[Dict]) -> Optional[Dict]:
+    """
+    Combina los métodos de consenso para obtener el mejor resultado.
+    
+    Args:
+        results: Lista de resultados OCR
+        
+    Returns:
+        El mejor resultado consensuado, o None si no hay consenso
+    """
+    if not results:
+        return None
+        
+    # Primero intentar consenso por votación
+    voting_result = apply_consensus_voting(results)
+    
+    # Si el consenso por votación es fuerte (al menos 3 coincidencias), usarlo
+    if voting_result and voting_result.get("consensus_count", 0) >= 3:
+        return voting_result
+        
+    # Intentar consenso por posiciones
+    pos_result = consensus_by_positions(results)
+    
+    if pos_result and is_valid_plate(pos_result):
+        # Crear un resultado nuevo con el texto por posiciones
+        best_conf = max(results, key=lambda r: r.get("confidence", 0.0))
+        result = dict(best_conf)
+        result["ocr_text"] = pos_result
+        result["consensus_method"] = "by_positions"
+        return result
+        
+    # Si el consenso por posiciones no es válido o no hay,
+    # volver al consenso por votación si existe
+    if voting_result:
+        return voting_result
+        
+    # En último caso, devolver el resultado con mayor confianza
+    if results:
+        return max(results, key=lambda r: r.get("confidence", 0.0))
+        
+    return None
+
+def process_ocr_result_detailed(results: List[Dict]) -> Dict:
+    """
+    Procesa los resultados OCR detalladamente, aplicando consenso
+    y proveyendo información adicional sobre el proceso.
+    
+    Args:
+        results: Lista de resultados OCR
+        
+    Returns:
+        Dict con información detallada del procesamiento
+    """
+    # Aplicar consenso
+    consensus = final_consensus(results)
+    
+    # Preparar resultado detallado
+    detailed = {
+        "timestamp": time.time(),
+        "raw_results": results,
+        "consensus": consensus,
+        "valid_count": sum(1 for r in results if is_valid_plate(r.get("ocr_text", ""))),
+        "total_count": len(results)
+    }
+    
+    # Añadir texto y confianza del consenso si existe
+    if consensus:
+        detailed["text"] = consensus.get("ocr_text", "")
+        detailed["confidence"] = consensus.get("confidence", 0.0)
+        detailed["is_valid"] = is_valid_plate(detailed["text"])
+    else:
+        detailed["text"] = ""
+        detailed["confidence"] = 0.0
+        detailed["is_valid"] = False
+        
+    return detailed

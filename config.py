@@ -99,8 +99,6 @@ DEFAULT_CALIBRATION_PARAMS = {
 # ---------------------------------------------------------------------
 # PARÁMETROS DE CONSENSO de OCR
 # ---------------------------------------------------------------------
-from typing import Optional
-
 # Longitud mínima para incluir una lectura en el consenso
 CONSENSUS_MIN_LENGTH: int = 5
 # Estrategia para determinar la longitud esperada de la matrícula:
@@ -140,6 +138,7 @@ WIDTH_OCR = 640
 HEIGHT_OCR = 320
 AREA_OCR = WIDTH_OCR * HEIGHT_OCR
 FAST_AREA_RATE_THRESHOLD = 0.05  # px²/ms
+OCR_MIN_CONFIDENCE = 65.0  # Umbral mínimo de confianza para resultados OCR (porcentaje)
 
 # Configuración de la zona de OCR Stream basado en zona de detección (columna imaginaria)
 OCR_STREAM_ZONE = {
@@ -172,3 +171,15 @@ ROI_ANGULO_ROTACION = -3.0     # Ángulo recomendado en grados
 ROI_ESCALA_FACTOR = 0.4        # Factor de escala (40%)
 ROI_APLICAR_CORRECCION = True  # Activar/desactivar análisis avanzado en QA_mode
   # Aplicar estas correcciones al procesar ROIs
+
+# ---------------------------------------------------------------------
+# CONFIGURACIÓN DE OCR MULTIESCALA
+# ---------------------------------------------------------------------
+# Controla si se aplica rotación en el procesamiento multiescala
+OCR_MULTISCALE_APPLY_ROTATION = True  # Activar/desactivar rotación en OCR multiescala
+
+# ---------------------------------------------------------------------
+# CONFIGURACIÓN DE SUPER-RESOLUCIÓN
+# ---------------------------------------------------------------------
+# Activa o desactiva el procesamiento con super-resolución
+USE_SUPER_RESOLUTION = True  # Activar/desactivar mejora de imagen con RealESRGAN

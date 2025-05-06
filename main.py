@@ -24,7 +24,8 @@ from config import (
     FPS_DEQUE_MAXLEN, UMBRAL_SNAPSHOT_AREA,
     NIGHT_THRESHOLD, DAY_THRESHOLD, OCR_STREAM_ZONE,
     OCR_STREAM_ACTIVATED, OCR_SNAPSHOT_ACTIVATED, OCR_OPENAI_ACTIVATED,
-    ROI_ANGULO_ROTACION, ROI_ESCALA_FACTOR, ROI_APLICAR_CORRECCION
+    ROI_ANGULO_ROTACION, ROI_ESCALA_FACTOR, ROI_APLICAR_CORRECCION,
+    USE_SUPER_RESOLUTION
 )
 from models import ModelManager
 
@@ -152,7 +153,37 @@ def schedule_snapshot_and_ocr(plate_id, inst):
             return
 
         # 3) Intentar OCR multiescala en el ROI
-        multiscale = ocr_processor.process_multiscale(roi)
+        # Verificar si podemos usar el enhancer para este ROI
+        enhanced_roi = None
+        if plate_manager and USE_SUPER_RESOLUTION:
+            try:
+                # Añadir el ROI al buffer del enhancer
+                plate_manager.image_enhancer.add_roi_to_buffer(plate_id, roi)
+                
+                # Intentar obtener un ROI mejorado si hay suficientes frames
+                enhanced_roi, method = plate_manager.image_enhancer.get_enhanced_roi(plate_id)
+                
+                if enhanced_roi is not None and enhanced_roi.size > 0:
+                    logging.info(f"[SR-SNAPSHOT] ROI mejorado ({method}) para placa {plate_id}")
+                    
+                    # Guardar ROI mejorado para análisis
+                    debug_dir = os.path.join(os.path.dirname(__file__), "debug")
+                    timestamp_ms = int(time.time() * 1000)
+                    enhanced_path = os.path.join(debug_dir, f"snapshot_sr_{timestamp_ms}_{plate_id}_{method}.jpg")
+                    cv2.imwrite(enhanced_path, enhanced_roi)
+            except Exception as e:
+                logging.warning(f"[SR-SNAPSHOT] Error al procesar ROI mejorado: {e}")
+                enhanced_roi = None
+                
+        # Usar ROI mejorado si está disponible, o el ROI original en caso contrario
+        roi_to_process = enhanced_roi if enhanced_roi is not None else roi
+        
+        # Intentar OCR multiescala en el ROI (con o sin mejora)
+        multiscale = ocr_processor.process_multiscale(
+            roi_to_process, 
+            track_id=plate_id if enhanced_roi is None else None,  # Solo pasamos track_id si no tenemos enhanced_roi
+            image_enhancer=plate_manager.image_enhancer if enhanced_roi is None else None  # Solo pasamos enhancer si no tenemos enhanced_roi
+        )
         best = apply_consensus_voting(multiscale, min_length=5)
         if best is not None:
             candidate_text = best.get("ocr_text", "").strip()
@@ -163,7 +194,7 @@ def schedule_snapshot_and_ocr(plate_id, inst):
 
         # 4) Fallback a OpenAI si hace falta y está habilitado
         if OCR_OPENAI_ACTIVATED and not (candidate_text and is_valid_plate(candidate_text)):
-            result = ocr_processor.process_plate_image(roi, use_openai=True)
+            result = ocr_processor.process_plate_image(roi_to_process, use_openai=True)
             text = result.get("ocr_text", "").strip()
             conf = result.get("confidence", 0.0)
         else:
@@ -193,14 +224,14 @@ def schedule_snapshot_and_ocr(plate_id, inst):
             # 6) Guardar snapshot en disco para debug
             timestamp_ms = int(time.time() * 1000)
             filename=f"fullframe_{timestamp_ms}_{plate_id}_{text}_ROI.jpg"
-            cv2.imwrite(os.path.join(debug_dir, filename), roi)
+            cv2.imwrite(os.path.join(debug_dir, filename), roi_to_process)
             # Guardar frame completo en debug
             full_frame_filename = f"fullframe_{timestamp_ms}_{plate_id}_{text}.jpg"
             cv2.imwrite(os.path.join(debug_dir, full_frame_filename), hd_snap)
 
             # 7) Envío de resultados
-            executor.submit(send_plate_async, roi, hd_snap, text, f"Tiempo detección a OCR: {full_time_ms} ms", inst.bbox)
-            send_backend(text, roi)
+            executor.submit(send_plate_async, roi_to_process, hd_snap, text, f"Tiempo detección a OCR: {full_time_ms} ms", inst.bbox)
+            send_backend(text, roi_to_process)
 
     except Exception as e:
         logging.warning(f"Error snapshot async placa {plate_id}: {e}")
@@ -264,6 +295,7 @@ def main(video_path=None):
         min_detection_confidence=CONFIANZA_PATENTE * 0.01,  # Convertir porcentaje a decimal
         exclude_footer=True,  # Activar exclusión de footer
         footer_ratio=0.85     # 85% de la altura para comenzar la zona de exclusión
+        # No pasar buffer_size aquí
     )
     snapshot_manager = SnapshotManager()
 

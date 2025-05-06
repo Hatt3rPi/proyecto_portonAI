@@ -41,14 +41,9 @@ from .image_processing import (
     calculate_roi_for_coverage
 )
 
-# Importación de utilidades para OCR
-from .ocr import (
-    is_valid_plate,
-    apply_consensus_voting,
-    consensus_by_positions,
-    final_consensus,
-    OCRProcessor,
-    process_ocr_result_detailed
+# Importación de utilidades para snapshot
+from .snapshot import (
+    SnapshotManager
 )
 
 # Importación de utilidades para tracking híbrido
@@ -60,9 +55,14 @@ from .plate_tracker import (
     filter_overlapping_by_size
 )
 
-# Importación de utilidades para snapshot
-from .snapshot import (
-    SnapshotManager
+# Importación de utilidades para OCR - Esta debe ser la última para evitar importaciones circulares
+from .ocr import (
+    OCRProcessor,
+    is_valid_plate,
+    apply_consensus_voting,
+    consensus_by_positions,
+    final_consensus,
+    process_ocr_result_detailed
 )
 
 # Exponer variable de configuración para los módulos que la necesiten
