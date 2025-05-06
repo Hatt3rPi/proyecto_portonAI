@@ -76,13 +76,33 @@ def send_plate_async(plate_img, frame_img, plate_text, confidence, coords):
     if plate_text in SENT_PLATES:
         return
         
-    # Medir tiempo de procesamiento
-    start_proc = time.time()
-    processing_time = time.time() - start_proc
-    capture_time = time.strftime("%d/%m %H:%M:%S", time.localtime())
+    # Calcular dimensiones del ROI para incluir en mensaje
+    roi_height, roi_width = plate_img.shape[:2]
+    roi_area = roi_width * roi_height
     
-    # Crear mensaje
-    message = f"Patente: {plate_text}\nResultados:\n{confidence}\nFecha captura: {capture_time}\nTiempo de procesamiento: {processing_time:.4f} s"
+    # Usar el mismo formato de tiempo exacto que en QA_mode
+    # Extraer tiempo de detección a OCR (si está disponible en la cadena de confidence)
+    process_time_ms = -1
+    if "Tiempo detección a OCR:" in confidence:
+        try:
+            time_str = confidence.split("Tiempo detección a OCR:")[1].split("ms")[0].strip()
+            process_time_ms = int(time_str)
+        except (IndexError, ValueError):
+            pass
+    
+    # Si no se pudo extraer del confidence, usar el tiempo actual
+    if process_time_ms == -1:
+        # Solo para compatibilidad, pero se prioriza el valor real de QA_mode
+        process_time_ms = int((time.time() - SENT_PLATES.get(plate_text, current_time)) * 1000)
+    
+    # Fecha de captura en formato estándar
+    capture_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    
+    # Crear mensaje con el tiempo de procesamiento exacto usado en QA_mode
+    message = f"Patente: {plate_text}\n" \
+              f"Área: {roi_area} px² ({roi_width}x{roi_height})\n" \
+              f"Fecha: {capture_time}\n" \
+              f"Tiempo detección a OCR: {process_time_ms} ms"
     
     # Preparar solicitud a Telegram
     telegram_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMediaGroup"

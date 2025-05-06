@@ -159,7 +159,7 @@ OCR_OPENAI_ACTIVATED = False   # Activar/desactivar uso de OpenAI para OCR
 # ---------------------------------------------------------------------
 # CONFIGURACIÓN DE ANÁLISIS QA AVANZADO
 # ---------------------------------------------------------------------
-QA_ANALISIS_AVANZADO = True  # Activar/desactivar análisis avanzado en QA_mode
+QA_ANALISIS_AVANZADO = False  # Activar/desactivar análisis avanzado en QA_mode
 QA_ANGULOS_VARIACION = ((-10, 10), 1)  # (rango_ángulos, paso) en grados
 QA_ESCALAS_VARIACION = (10, 100, 5)  # (min, max, paso) en porcentaje
 

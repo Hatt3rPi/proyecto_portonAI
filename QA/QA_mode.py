@@ -216,6 +216,14 @@ results = {}
 
 print("\n=== Iniciando procesamiento de videos QA ===\n")
 
+# Mostrar información sobre los parámetros de corrección de ROI que se utilizarán
+print("-" * 70)
+print(f"💡 PARÁMETROS DE CORRECCIÓN DE ROI:")
+print(f"✓ Ángulo de rotación: {ROI_ANGULO_ROTACION:.1f}°")
+print(f"✓ Factor de escala: {ROI_ESCALA_FACTOR:.2f} ({ROI_ESCALA_FACTOR*100:.0f}%)")
+print(f"✓ Aplicar corrección: {'Activado' if ROI_APLICAR_CORRECCION else 'Desactivado'}")
+print("-" * 70)
+
 # Inicializar modelos OCR si se activa el análisis avanzado
 if QA_ANALISIS_AVANZADO:
     # Calcular rangos y totales para mensajes informativos

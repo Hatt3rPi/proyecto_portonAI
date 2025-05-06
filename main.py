@@ -23,7 +23,8 @@ from config import (
     DEBUG_MODE, ONLINE_MODE, URL_HD, CONFIANZA_PATENTE,
     FPS_DEQUE_MAXLEN, UMBRAL_SNAPSHOT_AREA,
     NIGHT_THRESHOLD, DAY_THRESHOLD, OCR_STREAM_ZONE,
-    OCR_STREAM_ACTIVATED, OCR_SNAPSHOT_ACTIVATED, OCR_OPENAI_ACTIVATED
+    OCR_STREAM_ACTIVATED, OCR_SNAPSHOT_ACTIVATED, OCR_OPENAI_ACTIVATED,
+    ROI_ANGULO_ROTACION, ROI_ESCALA_FACTOR, ROI_APLICAR_CORRECCION
 )
 from models import ModelManager
 
@@ -213,6 +214,14 @@ def main(video_path=None):
     tracking y visualización, mientras delega snapshots/OCR a hilos.
     Si se pasa `video_path`, se utilizará ese archivo en lugar de RTSP.
     """
+    # Mostrar información sobre los parámetros de corrección de ROI que se utilizarán
+    print("-" * 70)
+    print(f"💡 PARÁMETROS DE CORRECCIÓN DE ROI:")
+    print(f"✓ Ángulo de rotación: {ROI_ANGULO_ROTACION:.1f}°")
+    print(f"✓ Factor de escala: {ROI_ESCALA_FACTOR:.2f} ({ROI_ESCALA_FACTOR*100:.0f}%)")
+    print(f"✓ Aplicar corrección: {'Activado' if ROI_APLICAR_CORRECCION else 'Desactivado'}")
+    print("-" * 70)
+    
     # Verificar si estamos en modo de extracción para QA
     qa_extract_mode = False
     qa_output_dir = None
@@ -495,7 +504,7 @@ def main(video_path=None):
                 crop = frame_ld[y1:y2, x1:x2]
                 try:
                     logging.debug(f"[OCR-STREAM] Iniciando OCR multiescala para {pid}, ROI={crop.shape}")
-                    multiscale = ocr_processor.process_multiscale(crop)
+                    multiscale = ocr_processor.process_multiescale(crop)
                     best = apply_consensus_voting(multiscale, min_length=5)
                     if best is None and multiscale:
                         best = max(multiscale, key=lambda r: r["confidence"])
