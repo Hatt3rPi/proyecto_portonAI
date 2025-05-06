@@ -14,6 +14,18 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
 from .ocr import OCRProcessor
+import math          # ← AGREGA
+
+
+
+# ------------------------------------------------------------------
+# 📌  Constantes de deduplicación y cool‑down
+# ------------------------------------------------------------------
+IOU_MERGE: float = 0.45           # IoU mínimo para fusionar detecciones
+MAX_CENTROID_DIST: int = 80       # Distancia máxima entre centroides (px)
+SEND_COOLDOWN_SEC: int = 15       # Segundos para evitar re‑envío de la misma placa
+# ------------------------------------------------------------------
+
 
 @dataclass
 class PlateTrackInstance:
@@ -110,6 +122,9 @@ def filter_overlapping_by_size(instances, overlap_thresh=OVERLAP_THRESHOLD):
             filtered.append(inst)
     return filtered
 # =================== END TRACKING UTILS ===================
+def _bbox_centroid(bbox):
+    x1, y1, x2, y2 = bbox
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
 
 class PlateTrackerManager:
     """
@@ -119,7 +134,7 @@ class PlateTrackerManager:
     def __init__(self, model_ocr=None, ocr_names=None, iou_thresh=0.5,
                  max_missed=7, detect_every=5, min_detection_confidence=0.7,
                  exclude_footer=True, footer_ratio=0.85,
-                 dedup_iou_thresh=0.9):
+                 dedup_iou_thresh=IOU_MERGE):
         """
         Inicializa el administrador de trackers.
         
@@ -148,6 +163,7 @@ class PlateTrackerManager:
         self.experimental_mode = False  # Habilitar experimentación con deskewing
         self.deskew_success_rate = 0
         self.deskew_attempt_count = 0
+        self.last_send_times = {}
         
         # Verificar disponibilidad de trackers
         self.tracker_type = None
@@ -165,6 +181,41 @@ class PlateTrackerManager:
         else:
             logging.warning("No se encontraron trackers compatibles, usando solo IoU")
     
+    # ------------------------------------------------------------------
+# ▸  DUPLICADOS y COOL-DOWN
+# ------------------------------------------------------------------
+    def _is_duplicate_detection(self, detection):
+        """
+        True si la detección se solapa (IoU ≥ IOU_MERGE) o el
+        centro está a < MAX_CENTROID_DIST px de un tracker activo.
+        """
+        for inst in self.active_instances.values():
+            if calculate_iou(detection, inst.bbox) >= IOU_MERGE:
+                return True
+            cx_d, cy_d = _bbox_centroid(detection)
+            cx_i, cy_i = _bbox_centroid(inst.bbox)
+            if math.hypot(cx_d - cx_i, cy_d - cy_i) < MAX_CENTROID_DIST:
+                return True
+        return False
+
+
+    def _on_valid_ocr(self, instance):
+        """
+        Registra la hora del último envío y devuelve
+        False si aún está dentro del cool-down.
+        """
+        plate = instance.ocr_text.strip().upper()
+        if not plate:
+            return False
+        now = time.time()
+        last = self.last_send_times.get(plate, 0)
+        if now - last < SEND_COOLDOWN_SEC:
+            logging.debug(f"[COOLDOWN] {plate} en cool-down…")
+            return False
+        self.last_send_times[plate] = now
+        return True
+
+
     def _create_tracker(self):
         """Crea un tracker según la disponibilidad."""
         if self.tracker_type == 'CSRT_LEGACY':
@@ -341,8 +392,8 @@ class PlateTrackerManager:
         unique_dets = []
         for det in detections:
             # si alguna en unique_dets está solapada en exceso, la descartamos
-            if not any(calculate_iou(det, ud) > getattr(self, 'dedup_iou_thresh', 0.9)
-                       for ud in unique_dets):
+            if not any(calculate_iou(det, ud) > self.dedup_iou_thresh
+                        for ud in unique_dets):
                 unique_dets.append(det)
         detections = unique_dets
 
@@ -429,32 +480,40 @@ class PlateTrackerManager:
         
         # 5. Crear nuevas instancias para detecciones no asociadas
         for i, detection in enumerate(detections):
-            if i not in matched_detections:
-                track_id = str(uuid.uuid4())
-                x1, y1, x2, y2 = detection
-                
-                # Validar que la detección es válida
-                if x2 <= x1 or y2 <= y1:
-                    continue
-                    
-                new_instance = PlateTrackInstance(
-                    tracker_id=track_id,
-                    bbox=detection,
-                    ocr_status='pending',
-                    last_detection=detection,
-                    detected_at=time.time()  
-                )
-                
-                # Inicializar tracker
-                if self.tracker_type:
-                    new_instance.tracker = self._create_tracker()
-                    if new_instance.tracker:
-                        try:
-                            new_instance.tracker.init(frame, (x1, y1, x2-x1, y2-y1))
-                        except Exception as e:
-                            logging.warning(f"Error al inicializar nuevo tracker: {e}")
-                            new_instance.tracker = None
-                
+            if i in matched_detections:
+                continue
+
+            # ❌ Omitir si ya existe tracker muy cercano / solapado
+            if self._is_duplicate_detection(detection):
+                logging.debug(f"[DEDUP] Detección duplicada omitida: {detection}")
+                continue
+
+            track_id = str(uuid.uuid4())                  # ←  AHORA sí creamos el ID
+            x1, y1, x2, y2 = detection
+
+            # Validar que la detección es válida
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+        
+            new_instance = PlateTrackInstance(
+                tracker_id=track_id,
+                bbox=detection,
+                ocr_status='pending',
+                last_detection=detection,
+                detected_at=time.time()  
+            )
+            
+            # Inicializar tracker
+            if self.tracker_type:
+                new_instance.tracker = self._create_tracker()
+                if new_instance.tracker:
+                    try:
+                        new_instance.tracker.init(frame, (x1, y1, x2-x1, y2-y1))
+                    except Exception as e:
+                        logging.warning(f"Error al inicializar nuevo tracker: {e}")
+                        new_instance.tracker = None
+            
                 self.active_instances[track_id] = new_instance
         
         # EXPERIMENTAL: Procesamiento con deskew para mejorar OCR
@@ -583,7 +642,11 @@ class PlateTrackerManager:
         
         # 8. Filtrar instancias con texto OCR inválido (como "CUSTOMWARE")
         self._filter_invalid_ocr_text()
-        
+        for inst in self.active_instances.values():
+            if inst.ocr_status == 'completed' and not inst.metadata.get('cooldown_checked'):
+                inst.metadata['cooldown_allowed'] = self._on_valid_ocr(inst)
+                inst.metadata['cooldown_checked'] = True
+
         return self.active_instances
     
     def _deduplicate_by_ocr_text(self):
