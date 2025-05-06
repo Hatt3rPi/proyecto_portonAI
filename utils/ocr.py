@@ -15,7 +15,10 @@ from config import (
     CONSENSUS_EXPECTED_LENGTH_METHOD,
     CONSENSUS_FIXED_LENGTH,
     OCR_OPENAI_ACTIVATED,
-    QA_ANALISIS_AVANZADO  # Añadimos la importación de esta variable
+    QA_ANALISIS_AVANZADO,  # Añadimos la importación de esta variable
+    ROI_ANGULO_ROTACION,
+    ROI_ESCALA_FACTOR,
+    ROI_APLICAR_CORRECCION
 )
 
 
@@ -260,10 +263,43 @@ class OCRProcessor:
             return []
             
         results = []
-        total_scales = 11  # Del 50% al 100% en pasos de 5% (11 escalas)
         
-        # Ya no reportamos progreso interno aquí, solo devolvemos los resultados
-        # El progreso se maneja en generar_mapa_calor que conoce el total de iteraciones
+        # Aplicar la corrección de ángulo y escala óptima definida en config.py
+        if ROI_APLICAR_CORRECCION:
+            try:
+                # 1. Aplicar rotación (si es necesario)
+                if abs(ROI_ANGULO_ROTACION) > 0.1:  # Si el ángulo no es aproximadamente 0
+                    # Implementar la función de rotación
+                    h, w = plate_img.shape[:2]
+                    center = (w // 2, h // 2)
+                    M = cv2.getRotationMatrix2D(center, ROI_ANGULO_ROTACION, 1.0)
+                    plate_img = cv2.warpAffine(plate_img, M, (w, h), 
+                                            borderMode=cv2.BORDER_CONSTANT,
+                                            borderValue=(0, 0, 0))
+                
+                # 2. Aplicar escala óptima
+                if abs(ROI_ESCALA_FACTOR - 1.0) > 0.01:  # Si el factor no es aproximadamente 1
+                    plate_img = cv2.resize(plate_img, None, fx=ROI_ESCALA_FACTOR, fy=ROI_ESCALA_FACTOR)
+                
+                # 3. Procesar la imagen corregida
+                ocr_out = self.model_ocr.predict(plate_img, device='cuda:0', verbose=False)
+                proc = process_ocr_result_detailed(ocr_out, self.names)
+                
+                text = proc.get('ocr_text', '').strip()
+                valid = is_valid_plate(text)
+                
+                if text and valid:
+                    proc['coverage'] = 100  # Marcamos como procesada con parámetros óptimos
+                    proc['optimized'] = True
+                    results.append(proc)
+                    return results  # Si tenemos un resultado válido con los parámetros óptimos, lo retornamos directamente
+            
+            except Exception as e:
+                logging.warning(f"Error al aplicar corrección óptima: {e}")
+                # Continuamos con el enfoque multi-escala tradicional
+        
+        # Enfoque multi-escala tradicional (como fallback o si no se aplica corrección)
+        total_scales = 11  # Del 50% al 100% en pasos de 5% (11 escalas)
         
         for scale in range(50, 105, 5):
             try:
@@ -281,6 +317,7 @@ class OCRProcessor:
                     continue
                 
                 proc['coverage'] = scale
+                proc['optimized'] = False
                 results.append(proc)
                 
             except Exception:

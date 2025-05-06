@@ -755,3 +755,71 @@ def generar_mapa_calor_agregado(resultados: List[Dict], output_dir: str):
             rot_info = f"{res['max_sim_rot']:.1f}% ({res['max_params_rot'][0]}°, {res['max_params_rot'][1]}%)"
             persp_info = f"{res['max_sim_persp']:.1f}% ({res['max_params_persp'][0]}°, {res['max_params_persp'][1]}%)"
             f.write(f"{video_name:30} {placa:10} {rot_info:20} {persp_info:20}\n")
+    
+    # Actualizar config.py automáticamente si mejora es significativa
+    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "config.py")
+    if os.path.exists(config_path):
+        # Definir umbrales para actualizar la configuración
+        mejora_significativa = False
+        
+        # Determinar mejor método y parámetros
+        if max_sim_persp > max_sim_rot and max_sim_persp > 60:
+            metodo_recomendado = "perspectiva"
+            angulo_recomendado = max_ang_persp
+            escala_recomendada = max_esc_persp / 100.0  # Convertir a factor decimal
+            sim_recomendada = max_sim_persp
+        elif max_sim_rot > 60:
+            metodo_recomendado = "rotación"
+            angulo_recomendado = max_ang_rot
+            escala_recomendada = max_esc_rot / 100.0  # Convertir a factor decimal
+            sim_recomendada = max_sim_rot
+        else:
+            metodo_recomendado = None
+            
+        # Verificar si la diferencia de similitud es significativa
+        if metodo_recomendado is not None:
+            # Comparar con config actual
+            actual_ang_idx = np.argmin(np.abs(angulos - ROI_ANGULO_ROTACION))
+            actual_esc_idx = np.argmin(np.abs(escalas - ROI_ESCALA_FACTOR * 100))
+            
+            if metodo_recomendado == "rotación":
+                actual_sim = sim_rot_avg[actual_ang_idx, actual_esc_idx]
+            else:
+                actual_sim = sim_persp_avg[actual_ang_idx, actual_esc_idx]
+            
+            # Si hay al menos un 5% de mejora, actualizar
+            if sim_recomendada - actual_sim > 5:
+                mejora_significativa = True
+                
+                try:
+                    # Leer el archivo config.py
+                    with open(config_path, 'r') as f:
+                        config_content = f.read()
+                    
+                    # Actualizar los valores de configuración
+                    import re
+                    new_content = re.sub(r'ROI_ANGULO_ROTACION\s*=\s*[-+]?[0-9]*\.?[0-9]+', 
+                                        f'ROI_ANGULO_ROTACION = {angulo_recomendado:.1f}', 
+                                        config_content)
+                    new_content = re.sub(r'ROI_ESCALA_FACTOR\s*=\s*[-+]?[0-9]*\.?[0-9]+', 
+                                        f'ROI_ESCALA_FACTOR = {escala_recomendada:.1f}', 
+                                        new_content)
+                    
+                    # Guardar el archivo actualizado
+                    with open(config_path, 'w') as f:
+                        f.write(new_content)
+                    
+                    print(f"[QA-AVANZADO] Actualización automática de config.py:")
+                    print(f" - Ángulo: {ROI_ANGULO_ROTACION:.1f}° → {angulo_recomendado:.1f}°")
+                    print(f" - Escala: {ROI_ESCALA_FACTOR*100:.1f}% → {escala_recomendada*100:.1f}%")
+                    print(f" - Mejora estimada: {actual_sim:.1f}% → {sim_recomendada:.1f}% (+{sim_recomendada-actual_sim:.1f}%)")
+                    
+                    # Guardar historial de actualizaciones
+                    with open(os.path.join(output_dir, "actualizaciones_config.txt"), "a") as f:
+                        f.write(f"[{timestamp}] Actualización automática de parámetros\n")
+                        f.write(f"  - Ángulo: {ROI_ANGULO_ROTACION:.1f}° → {angulo_recomendado:.1f}°\n")
+                        f.write(f"  - Escala: {ROI_ESCALA_FACTOR*100:.1f}% → {escala_recomendada*100:.1f}%\n")
+                        f.write(f"  - Mejora estimada: {actual_sim:.1f}% → {sim_recomendada:.1f}% (+{sim_recomendada-actual_sim:.1f}%)\n\n")
+                
+                except Exception as e:
+                    print(f"[QA-AVANZADO] Error al actualizar config.py: {e}")

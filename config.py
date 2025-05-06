@@ -159,6 +159,15 @@ OCR_OPENAI_ACTIVATED = False   # Activar/desactivar uso de OpenAI para OCR
 # ---------------------------------------------------------------------
 # CONFIGURACIÓN DE ANÁLISIS QA AVANZADO
 # ---------------------------------------------------------------------
-QA_ANALISIS_AVANZADO = False  # Activar/desactivar análisis avanzado en QA_mode
+QA_ANALISIS_AVANZADO = True  # Activar/desactivar análisis avanzado en QA_mode
 QA_ANGULOS_VARIACION = ((-10, 10), 1)  # (rango_ángulos, paso) en grados
 QA_ESCALAS_VARIACION = (10, 100, 5)  # (min, max, paso) en porcentaje
+
+# ---------------------------------------------------------------------
+# CONFIGURACIÓN DE ÁNGULO Y ESCALA PARA PROCESAMIENTO DE ROI
+# ---------------------------------------------------------------------
+# Estos valores se actualizan automáticamente basados en los resultados del QA
+# Valores iniciales basados en el análisis de QA
+ROI_ANGULO_ROTACION = -3.0     # Ángulo recomendado en grados
+ROI_ESCALA_FACTOR = 0.4        # Factor de escala (40%)
+ROI_APLICAR_CORRECCION = True  # Aplicar estas correcciones al procesar ROIs
