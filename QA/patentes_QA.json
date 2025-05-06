@@ -6,7 +6,7 @@
         "direccion": "salida",
         "marcha": "adelante",
         "iluminacion": "d\u00eda/noche",
-        "incluir_qa": true
+        "incluir_qa": false
     },
     "NVR_ch1_main_20250414133110_20250414133120.dav": {
         "patentes": [
@@ -15,7 +15,7 @@
         "direccion": "salida",
         "marcha": "adelante",
         "iluminacion": "d\u00eda",
-        "incluir_qa": true
+        "incluir_qa": false
     },
     "NVR_ch1_main_20250415144940_20250415144950.dav": {
         "patentes": [
@@ -24,7 +24,7 @@
         "direccion": "salida",
         "marcha": "retroceso",
         "iluminacion": "d\u00eda",
-        "incluir_qa": true
+        "incluir_qa": false
     },
     "NVR_ch1_main_20250415165024_20250415165034.dav": {
         "patentes": [
@@ -33,7 +33,7 @@
         "direccion": "salida",
         "marcha": "adelante",
         "iluminacion": "d\u00eda",
-        "incluir_qa": true
+        "incluir_qa": false
     },
     "NVR_ch1_main_20250416232152_20250416232159.dav": {
         "patentes": [
@@ -42,7 +42,7 @@
         "direccion": "ingreso",
         "marcha": "adelante",
         "iluminacion": "noche",
-        "incluir_qa": true
+        "incluir_qa": false
     },
     "NVR_ch1_main_20250417065202_20250417065214.dav": {
         "patentes": [
@@ -51,7 +51,7 @@
         "direccion": "ingreso",
         "marcha": "retroceso",
         "iluminacion": "noche",
-        "incluir_qa": true
+        "incluir_qa": false
     },
     "NVR_ch1_main_20250417155614_20250417155624.dav": {
         "patentes": [
@@ -69,7 +69,7 @@
         "direccion": "ingreso",
         "marcha": "adelante",
         "iluminacion": "noche",
-        "incluir_qa": true
+        "incluir_qa": false
     },
     "NVR_ch1_main_20250504080344_20250504080404.dav": {
         "patentes": [
@@ -78,7 +78,7 @@
         "direccion": "desconocida",
         "marcha": "desconocida",
         "iluminacion": "desconocida",
-        "incluir_qa": true
+        "incluir_qa": false
     },
     "NVR_ch1_main_20250504092757_20250504092817.dav": {
         "patentes": [
@@ -87,7 +87,7 @@
         "direccion": "desconocida",
         "marcha": "desconocida",
         "iluminacion": "desconocida",
-        "incluir_qa": true
+        "incluir_qa": false
     },
     "NVR_ch1_main_20250504100153_20250504100213.dav": {
         "patentes": [
@@ -96,7 +96,7 @@
         "direccion": "ingreso",
         "marcha": "adelante",
         "iluminacion": "d\u00eda",
-        "incluir_qa": true
+        "incluir_qa": false
     },
     "NVR_ch1_main_20250504111326_20250504111346.dav": {
         "patentes": [
@@ -105,7 +105,7 @@
         "direccion": "ingreso",
         "marcha": "adelante",
         "iluminacion": "d\u00eda",
-        "incluir_qa": true
+        "incluir_qa": false
     },
     "NVR_ch1_main_20250504113440_20250504113500.dav": {
         "patentes": [
@@ -114,7 +114,7 @@
         "direccion": "ingreso",
         "marcha": "retroceso",
         "iluminacion": "d\u00eda",
-        "incluir_qa": true
+        "incluir_qa": false
     },
     "NVR_ch1_main_20250504123835_20250504123855.dav": {
         "patentes": [
@@ -123,7 +123,7 @@
         "direccion": "salida",
         "marcha": "adelante",
         "iluminacion": "d\u00eda",
-        "incluir_qa": true
+        "incluir_qa": false
     },
     "NVR_ch1_main_20250504123845_20250504123905.dav": {
         "patentes": [
@@ -132,7 +132,7 @@
         "direccion": "salida",
         "marcha": "adelante",
         "iluminacion": "d\u00eda",
-        "incluir_qa": true
+        "incluir_qa": false
     },
     "NVR_ch1_main_20250504124234_20250504124254.dav": {
         "patentes": [
@@ -141,7 +141,7 @@
         "direccion": "ingreso",
         "marcha": "adelante",
         "iluminacion": "d\u00eda",
-        "incluir_qa": true
+        "incluir_qa": false
     },
     "NVR_ch1_main_20250504130042_20250504130102.dav": {
         "patentes": [
@@ -150,7 +150,7 @@
         "direccion": "ingreso",
         "marcha": "adelante",
         "iluminacion": "d\u00eda",
-        "incluir_qa": true
+        "incluir_qa": false
     },
     "NVR_ch1_main_20250504130357_20250504130417.dav": {
         "patentes": [
@@ -159,6 +159,6 @@
         "direccion": "salida",
         "marcha": "adelante",
         "iluminacion": "d\u00eda",
-        "incluir_qa": true
+        "incluir_qa": false
     }
 }

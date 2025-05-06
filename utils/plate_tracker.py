@@ -332,7 +332,7 @@ class PlateTrackerManager:
             else:
                 logging.debug(f"[TRACKER] Detección {i} descartada: {det}")
         
-        #logging.debug(f"[TRACKER] Frame {self.frame_count}: {len(valid_detections)}/{len(detections)} detecciones válidas")
+        logging.debug(f"[TRACKER] Frame {self.frame_count}: {len(valid_detections)}/{len(detections)} detecciones válidas")
         
         # Reemplazamos detections por las válidas
         detections = valid_detections

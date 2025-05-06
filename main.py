@@ -504,7 +504,7 @@ def main(video_path=None):
                 crop = frame_ld[y1:y2, x1:x2]
                 try:
                     logging.debug(f"[OCR-STREAM] Iniciando OCR multiescala para {pid}, ROI={crop.shape}")
-                    multiscale = ocr_processor.process_multiescala(crop)
+                    multiscale = ocr_processor.process_multiscale(crop)
                     best = apply_consensus_voting(multiscale, min_length=5)
                     if best is None and multiscale:
                         best = max(multiscale, key=lambda r: r["confidence"])
