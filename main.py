@@ -502,6 +502,7 @@ def main(video_path=None):
                     logging.warning(f"[2.7] ROI inválido para OCR en placa {pid}: {(x1,y1,x2,y2)}")
                     continue
                 crop = frame_ld[y1:y2, x1:x2]
+                
                 try:
                     logging.debug(f"[OCR-STREAM] Iniciando OCR multiescala para {pid}, ROI={crop.shape}")
                     multiscale = ocr_processor.process_multiscale(crop)

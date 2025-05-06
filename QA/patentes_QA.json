@@ -60,7 +60,7 @@
         "direccion": "ingreso",
         "marcha": "adelante",
         "iluminacion": "d\u00eda",
-        "incluir_qa": false
+        "incluir_qa": true
     },
     "NVR_ch1_main_20250422191535_20250422191540.dav": {
         "patentes": [
