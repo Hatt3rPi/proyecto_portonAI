@@ -29,7 +29,10 @@ try:
     from config import (
         QA_ANALISIS_AVANZADO,
         QA_ANGULOS_VARIACION,
-        QA_ESCALAS_VARIACION
+        QA_ESCALAS_VARIACION,
+        ROI_ANGULO_ROTACION,
+        ROI_ESCALA_FACTOR,
+        ROI_APLICAR_CORRECCION
     )
     
     # Si el análisis avanzado está activado, configurar el logger para filtrar mensajes OCR-MULTIESCALA
@@ -56,6 +59,9 @@ except ImportError:
     QA_ANALISIS_AVANZADO = False
     QA_ANGULOS_VARIACION = ((-5, 10), 0.5)
     QA_ESCALAS_VARIACION = (50, 150, 5)
+    ROI_ANGULO_ROTACION = 0.0       # Valores por defecto
+    ROI_ESCALA_FACTOR = 1.0         # Valores por defecto
+    ROI_APLICAR_CORRECCION = False  # Valores por defecto
 
 # Importar análisis avanzado condicionalmente
 if QA_ANALISIS_AVANZADO:
@@ -224,6 +230,29 @@ print(f"✓ Factor de escala: {ROI_ESCALA_FACTOR:.2f} ({ROI_ESCALA_FACTOR*100:.0
 print(f"✓ Aplicar corrección: {'Activado' if ROI_APLICAR_CORRECCION else 'Desactivado'}")
 print("-" * 70)
 
+# Filtrar videos que están marcados con "incluir_qa": false
+videos_to_process = []
+videos_excluded = 0
+for fname in sorted(os.listdir(VIDEOS_DIR)):
+    if not fname.lower().endswith(".dav"):
+        continue
+        
+    # Verificar si el video debe incluirse en QA
+    video_info = mapping.get(fname, {})
+    incluir_qa = video_info.get("incluir_qa", True)  # Por defecto True si no se especifica
+    
+    if not incluir_qa:
+        videos_excluded += 1
+        continue
+        
+    videos_to_process.append(fname)
+
+# Mostrar información sobre filtrado
+if videos_excluded > 0:
+    print(f"[QA] Se excluirán {videos_excluded} videos marcados como 'incluir_qa: false'")
+    print(f"[QA] Se procesarán {len(videos_to_process)} videos en total")
+    print("-" * 70)
+
 # Inicializar modelos OCR si se activa el análisis avanzado
 if QA_ANALISIS_AVANZADO:
     # Calcular rangos y totales para mensajes informativos
@@ -254,10 +283,8 @@ if QA_ANALISIS_AVANZADO:
     mapas_calor_dir = os.path.join(RESULTADOS_DIR, f"mapas_calor_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
     os.makedirs(mapas_calor_dir, exist_ok=True)
 
-for fname in sorted(os.listdir(VIDEOS_DIR)):
-    if not fname.lower().endswith(".dav"):
-        continue
-
+# Procesar solo los videos filtrados
+for fname in videos_to_process:
     video_path = os.path.join(VIDEOS_DIR, fname)
     expected_info = mapping.get(fname, {})
     expected_plates = expected_info.get("patentes", ["TBC"])

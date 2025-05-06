@@ -199,7 +199,7 @@ def schedule_snapshot_and_ocr(plate_id, inst):
             cv2.imwrite(os.path.join(debug_dir, full_frame_filename), hd_snap)
 
             # 7) Envío de resultados
-            executor.submit(send_plate_async, roi, hd_snap, text, "", inst.bbox)
+            executor.submit(send_plate_async, roi, hd_snap, text, f"Tiempo detección a OCR: {full_time_ms} ms", inst.bbox)
             send_backend(text, roi)
 
     except Exception as e:
@@ -504,7 +504,7 @@ def main(video_path=None):
                 crop = frame_ld[y1:y2, x1:x2]
                 try:
                     logging.debug(f"[OCR-STREAM] Iniciando OCR multiescala para {pid}, ROI={crop.shape}")
-                    multiscale = ocr_processor.process_multiescale(crop)
+                    multiscale = ocr_processor.process_multiescala(crop)
                     best = apply_consensus_voting(multiscale, min_length=5)
                     if best is None and multiscale:
                         best = max(multiscale, key=lambda r: r["confidence"])
@@ -560,23 +560,23 @@ def main(video_path=None):
                         # 7) Envío de resultados al backend
                         if is_offline:
                             hd_snap = frame_ld.copy()
-                            executor.submit(send_plate_async, crop, hd_snap, text, "", inst.bbox)
+                            executor.submit(send_plate_async, crop, hd_snap, text, f"Tiempo detección a OCR: {full_time_ms} ms", inst.bbox)
                             send_backend(text, crop)
                         else:
                             # En modo online intentamos obtener un snapshot HD
                             try:
                                 _, hd_snap = snapshot_manager.request_update_future(pid).result(timeout=3)
                                 if hd_snap is not None:
-                                    executor.submit(send_plate_async, crop, hd_snap, text, "", inst.bbox)
+                                    executor.submit(send_plate_async, crop, hd_snap, text, f"Tiempo detección a OCR: {full_time_ms} ms", inst.bbox)
                                     send_backend(text, crop)
                                 else:
                                     # Fallback a frame LD
-                                    executor.submit(send_plate_async, crop, frame_ld.copy(), text, "", inst.bbox)
+                                    executor.submit(send_plate_async, crop, frame_ld.copy(), text, f"Tiempo detección a OCR: {full_time_ms} ms", inst.bbox)
                                     send_backend(text, crop)
                             except Exception as e:
                                 logging.warning(f"Error obteniendo snapshot para envío: {e}, usando frame LD")
                                 # Fallback a frame LD
-                                executor.submit(send_plate_async, crop, frame_ld.copy(), text, "", inst.bbox)
+                                executor.submit(send_plate_async, crop, frame_ld.copy(), text, f"Tiempo detección a OCR: {full_time_ms} ms", inst.bbox)
                                 send_backend(text, crop)
                 except Exception as e:
                     logging.warning(f"[2.7] OCR stream error placa {pid}: {e}")
